@@ -1,0 +1,22 @@
+{
+	"settings": {
+		"index": {
+			"number_of_shards": 1,
+			"number_of_replicas": 1,
+			"refresh_interval": "5s"
+		}
+	},
+	"mappings": {
+			"properties": {
+				"queueID": {
+					"type": "keyword"
+				},
+				"crawlID": {
+					"type": "keyword"
+				},
+				"assignmentHash": {
+					"type": "keyword"
+				}
+			}
+	}
+}
