@@ -447,7 +447,7 @@ public class OpensearchService extends AbstractFrontierService
 
                 String sha256hex =
                         org.apache.commons.codec.digest.DigestUtils.sha256Hex(
-                                qk.getCrawlid() + url);
+                                qk.toString() + "_" + url);
 
                 // have a cache mechanism to avoid sending duplicate content?
 

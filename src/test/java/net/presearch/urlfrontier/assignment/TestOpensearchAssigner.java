@@ -66,7 +66,7 @@ public class TestOpensearchAssigner {
         String host = opensearchContainer.getHost();
         Integer port = opensearchContainer.getFirstMappedPort();
 
-        int heartbeatSec = 10;
+        int heartbeatSec = 2;
 
         Map<String, String> configuration = new HashMap<>();
         configuration.put(Constants.OSHostParamName, host);
@@ -77,7 +77,7 @@ public class TestOpensearchAssigner {
         IAssigner second = createAssigner(configuration, "SECOND");
 
         // sleep for several heartbeats so that the assigners can converge
-        Thread.sleep(8 * heartbeatSec * 1000);
+        Thread.sleep(10 * heartbeatSec * 1000);
 
         // check that they both have half the assignments
         Assert.assertEquals(
@@ -116,7 +116,7 @@ public class TestOpensearchAssigner {
         String host = opensearchContainer.getHost();
         Integer port = opensearchContainer.getFirstMappedPort();
 
-        int heartbeatSec = 10;
+        int heartbeatSec = 2;
 
         Map<String, String> configuration = new HashMap<>();
         configuration.put(Constants.OSHostParamName, host);
@@ -128,7 +128,7 @@ public class TestOpensearchAssigner {
         IAssigner third = createAssigner(configuration, "THIRD");
 
         // sleep for several heartbeats to give the assigners time to converge
-        Thread.sleep(15 * heartbeatSec * 1000);
+        Thread.sleep(20 * heartbeatSec * 1000);
 
         // check that no partition has been left behind
         // and that we were able to deal with remainders
