@@ -1,6 +1,6 @@
 # Opensearch implementation of URLFrontier service
 
-This implementation of [URLFrontier](http://urlfrontier.net) service is compatible with the version 1.1 of the URLFrontier API.
+This implementation of [URLFrontier](http://urlfrontier.net) service is compatible with the [version 1.1 of the URLFrontier API](https://github.com/crawler-commons/url-frontier/releases/download/urlfrontier-1.1/urlfrontier.proto).
 It uses [Opensearch](https://opensearch.org/) as a backend for storing the URLs discovered or visited during a crawl and exposing its content to web crawlers using the URLFrontier API.
 
 This implementation was designed with the following constraints in mind: instances of the Frontier service can work on the same crawls but don't have to be able to connect to each other. Each Frontier instance might also receive requests from a very large number of crawlers.
