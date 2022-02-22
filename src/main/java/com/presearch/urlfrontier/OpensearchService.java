@@ -1,5 +1,22 @@
-package net.presearch.urlfrontier;
+/**
+ * SPDX-FileCopyrightText: 2022 Presearch SPDX-License-Identifier: Apache-2.0 Licensed to Presearch
+ * under one or more contributor license agreements. See the NOTICE file distributed with this work
+ * for additional information regarding copyright ownership. DigitalPebble licenses this file to You
+ * under the Apache License, Version 2.0 (the "License"); you may not use this file except in
+ * compliance with the License. You may obtain a copy of the License at
+ *
+ * <p>http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * <p>Unless required by applicable law or agreed to in writing, software distributed under the
+ * License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+ * express or implied. See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.presearch.urlfrontier;
 
+import com.presearch.urlfrontier.assignment.AssignmentsListener;
+import com.presearch.urlfrontier.assignment.IAssigner;
+import com.presearch.urlfrontier.assignment.OpensearchAssigner;
 import crawlercommons.urlfrontier.CrawlID;
 import crawlercommons.urlfrontier.Urlfrontier.KnownURLItem;
 import crawlercommons.urlfrontier.Urlfrontier.Stats;
@@ -30,9 +47,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import net.presearch.urlfrontier.assignment.AssignmentsListener;
-import net.presearch.urlfrontier.assignment.IAssigner;
-import net.presearch.urlfrontier.assignment.OpensearchAssigner;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
