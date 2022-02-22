@@ -12,6 +12,8 @@ The Frontier instances get assigned a number of partitions, in proportion of the
 
 The assignment method is eventually consistent and it takes a few iterations for the number of assignments to stabilise.
 
+The [assignment implementation](https://github.com/PresearchOfficial/opensearch-frontier/tree/main/src/main/java/com/presearch/urlfrontier/assignment) is configurable.
+
 ## Prerequisites
 
 * Java 8
