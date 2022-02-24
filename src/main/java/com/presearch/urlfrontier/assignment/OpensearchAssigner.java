@@ -74,6 +74,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
     private BulkProcessor bulkProcessor;
 
+    private boolean closed;
+
     @Override
     public void init(Map<String, String> configuration) {
         String host = configuration.getOrDefault(Constants.OSHostParamName, "localhost");
@@ -193,6 +195,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
     @Override
     public void close() throws IOException {
+        closed = true;
         client.close();
     }
 
@@ -235,6 +238,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
     @Override
     // called for every heartbeat
     public void run() {
+
+        if (closed) return;
 
         long timestamp = Instant.now().getMillis();
 

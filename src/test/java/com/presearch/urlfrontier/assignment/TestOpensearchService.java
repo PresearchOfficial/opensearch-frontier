@@ -47,7 +47,7 @@ public class TestOpensearchService {
 
         configuration.put(
                 Constants.AssignmentClassParamName,
-                "net.presearch.urlfrontier.assignment.DummyAssigner");
+                "com.presearch.urlfrontier.assignment.DummyAssigner");
 
         OpensearchService service = new OpensearchService(configuration);
 

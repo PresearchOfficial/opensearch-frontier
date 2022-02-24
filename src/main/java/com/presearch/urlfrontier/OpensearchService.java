@@ -94,6 +94,8 @@ public class OpensearchService extends AbstractFrontierService
 
     private final boolean doRouting;
 
+    private boolean isClosed;
+
     private final int totalNumberAssignments;
 
     private final int minsBetweenAssignmentRefresh;
@@ -243,6 +245,8 @@ public class OpensearchService extends AbstractFrontierService
 
     @Override
     public void close() throws IOException {
+        isClosed = true;
+        assigner.close();
         client.close();
     }
 
@@ -570,6 +574,9 @@ public class OpensearchService extends AbstractFrontierService
 
     @Override
     public void run() {
+        // don't run if this instance is closing or closed
+        if (isClosed) return;
+
         // has enough time elapsed since the previous refresh or
         // have we had a recent change of assignments?
         if (assignmentsChanged.get()) {
