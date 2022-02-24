@@ -41,11 +41,18 @@ public class Queue implements QueueInterface {
 
     public void addToBuffer(URLInfo info) {
         if (buffer == null) buffer = new ArrayList<>();
-        buffer.add(info);
+        if (!buffer.contains(info)) {
+            buffer.add(info);
+        }
     }
 
     public List<URLInfo> getBuffer() {
         return buffer;
+    }
+
+    public int bufferSize() {
+        if (buffer == null) return 0;
+        return buffer.size();
     }
 
     @Override
