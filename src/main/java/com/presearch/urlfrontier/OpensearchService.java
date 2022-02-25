@@ -131,7 +131,7 @@ public class OpensearchService extends AbstractFrontierService
     // current partitions
     // this in an intermediate level before the queues in AbstractFrontierService
     // they need to be kept in sync and the mapping must be revisited
-    protected final Map<String, List<QueueWithinCrawl>> partitions =
+    protected final Map<String, Set<QueueWithinCrawl>> partitions =
             Collections.synchronizedMap(new LinkedHashMap<>());
 
     // no explicit config
@@ -247,7 +247,12 @@ public class OpensearchService extends AbstractFrontierService
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(this, 1, 1, TimeUnit.SECONDS);
 
-        new QueuesPopulator().start();
+        int URLsPerQueueToCache = 10;
+        int numRequestsPerBatch = 50;
+        int msecBetweenReadRequests = 100;
+
+        new QueuesPopulator(numRequestsPerBatch, URLsPerQueueToCache, msecBetweenReadRequests)
+                .start();
     }
 
     @Override
@@ -272,7 +277,9 @@ public class OpensearchService extends AbstractFrontierService
 
         // only use URLs from the cache
         while (q.bufferSize() > 0 && countSent < maxURLsPerQueue) {
-            responseObserver.onNext(q.getBuffer().remove(0));
+            URLInfo next = q.getBuffer().remove(0);
+            q.holdUntil(next.getUrl(), now + secsUntilRequestable);
+            responseObserver.onNext(next);
             countSent++;
         }
 
@@ -362,9 +369,8 @@ public class OpensearchService extends AbstractFrontierService
                     // no need to wait for the next sync
                     if (partitions.containsKey(Integer.toString(assignmentHash))) {
                         partitions.putIfAbsent(
-                                Integer.toString(assignmentHash),
-                                new LinkedList<QueueWithinCrawl>());
-                        List<QueueWithinCrawl> localqueues =
+                                Integer.toString(assignmentHash), new HashSet<QueueWithinCrawl>());
+                        Set<QueueWithinCrawl> localqueues =
                                 partitions.get(Integer.toString(assignmentHash));
                         if (!localqueues.contains(qk)) {
                             localqueues.add(qk);
@@ -474,7 +480,7 @@ public class OpensearchService extends AbstractFrontierService
         for (String oldPart : partitions.keySet()) {
             if (!newPartitions.contains(oldPart)) {
                 // remove it and the corresponding queues
-                List<QueueWithinCrawl> queues4partitions = partitions.remove(oldPart);
+                Set<QueueWithinCrawl> queues4partitions = partitions.remove(oldPart);
                 // can be null if we haven't mapped the queues to it yet
                 if (queues4partitions != null) {
                     for (QueueWithinCrawl mappedQueues : queues4partitions) {
@@ -487,7 +493,7 @@ public class OpensearchService extends AbstractFrontierService
         for (String part : newPartitions) {
             // store an empty list for now, it will be populated when the mappings
             // are refreshed
-            partitions.putIfAbsent(part, new ArrayList<QueueWithinCrawl>());
+            partitions.putIfAbsent(part, new HashSet<QueueWithinCrawl>());
         }
 
         assignmentsChanged.set(true);
@@ -541,7 +547,7 @@ public class OpensearchService extends AbstractFrontierService
         int totalQueues = 0;
         int partitionsCount = 0;
 
-        final List<QueueWithinCrawl> found = new ArrayList<>();
+        final Set<QueueWithinCrawl> found = new HashSet<>();
 
         try {
 
@@ -554,7 +560,7 @@ public class OpensearchService extends AbstractFrontierService
                 partitionsCount++;
 
                 // existing list
-                List<QueueWithinCrawl> existingList = partitions.get(partitionID);
+                Set<QueueWithinCrawl> existingList = partitions.get(partitionID);
 
                 // query the queues index to get all the ones having this partition id
                 SearchRequest searchRequest = new SearchRequest(this.queuesIndexName);
@@ -575,6 +581,7 @@ public class OpensearchService extends AbstractFrontierService
                     QueueWithinCrawl qwc = QueueWithinCrawl.get(queueID, crawlID);
                     queues.putIfAbsent(qwc, new Queue());
                     found.add(qwc);
+                    totalQueues++;
                 }
 
                 // delete the ones that have disappeared since
@@ -813,26 +820,40 @@ public class OpensearchService extends AbstractFrontierService
 
         private Instant lastQuery = Instant.now();
 
-        private static final int minsBetweenLoadsInSecs = 1;
+        private final int minDelayBetweenLoads;
+        private final int urlsToPutInCache;
+        private final int numrequests;
+
+        QueuesPopulator(int numrequests, int urlsToPutInCache, int minDelayBetweenLoads) {
+            this.numrequests = numrequests;
+            this.urlsToPutInCache = urlsToPutInCache;
+            this.minDelayBetweenLoads = minDelayBetweenLoads;
+        }
 
         @Override
         public void run() {
             while (!isClosed) {
-                //  implement delay between requests
-                if (lastQuery.isAfter(Instant.now().minusSeconds(minsBetweenLoadsInSecs))) {
+                // implement delay between requests
+                long msecTowait =
+                        minDelayBetweenLoads
+                                - (Instant.now().toEpochMilli() - lastQuery.toEpochMilli());
+                if (msecTowait > 0) {
+                    try {
+                        Thread.sleep(msecTowait);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                     continue;
                 }
 
-                // do as async multisearch
-                MultiSearchRequest msr = new MultiSearchRequest();
-
-                Iterator<Entry<QueueWithinCrawl, QueueInterface>> iterator =
-                        queues.entrySet().iterator();
-
-                int urlsToPutInCache = 10;
-                int numrequests = 10;
-
                 synchronized (queues) {
+
+                    // do as async multisearch
+                    MultiSearchRequest msr = new MultiSearchRequest();
+
+                    Iterator<Entry<QueueWithinCrawl, QueueInterface>> iterator =
+                            queues.entrySet().iterator();
+
                     lastQuery = Instant.now();
 
                     while (iterator.hasNext() && msr.requests().size() < numrequests) {
@@ -876,16 +897,18 @@ public class OpensearchService extends AbstractFrontierService
 
                         queuesBeingPopulated.add(e.getKey().toString());
                     }
-                }
 
-                if (!msr.requests().isEmpty()) {
-                    client.msearchAsync(msr, RequestOptions.DEFAULT, this);
+                    if (!msr.requests().isEmpty()) {
+                        client.msearchAsync(msr, RequestOptions.DEFAULT, this);
+                    }
                 }
             }
         }
 
         @Override
         public void onResponse(MultiSearchResponse response) {
+            LOG.debug("Multisearch took {}", response.getTook());
+
             for (Item item : response) {
                 if (item.isFailure()) {
                     // TODO deal with the failure
