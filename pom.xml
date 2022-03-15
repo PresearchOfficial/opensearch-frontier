@@ -3,7 +3,7 @@
 	<modelVersion>4.0.0</modelVersion>
 
 	<name>urlfrontier-opensearch-service</name>
-	<groupId>net.presearch</groupId>
+	<groupId>com.presearch</groupId>
 	<artifactId>urlfrontier-opensearch-service</artifactId>
 	<packaging>jar</packaging>
 	<version>0.1-SNAPSHOT</version>
