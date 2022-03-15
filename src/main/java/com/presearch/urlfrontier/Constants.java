@@ -27,4 +27,5 @@ public interface Constants {
     String minsBetweenAssignmentRefreshParamName = "opensearch.time.between.refresh";
     String OSUserParamName = "opensearch.user";
     String OSPasswordParamName = "opensearch.password";
+    String OSSchemeParamName = "opensearch.scheme";
 }

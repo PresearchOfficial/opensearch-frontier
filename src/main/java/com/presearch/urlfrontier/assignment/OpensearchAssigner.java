@@ -84,6 +84,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         String user = configuration.getOrDefault(Constants.OSUserParamName, "admin");
         String password = configuration.getOrDefault(Constants.OSPasswordParamName, "admin");
 
+        String scheme = configuration.getOrDefault(Constants.OSSchemeParamName, "http");
+
         int hb =
                 Integer.parseInt(
                         configuration.getOrDefault(
@@ -111,7 +113,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
         // Create a client.
         RestClientBuilder builder =
-                RestClient.builder(new HttpHost(host, Integer.parseInt(port), "http"))
+                RestClient.builder(new HttpHost(host, Integer.parseInt(port), scheme))
                         .setHttpClientConfigCallback(
                                 new RestClientBuilder.HttpClientConfigCallback() {
                                     @Override

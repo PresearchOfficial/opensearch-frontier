@@ -147,6 +147,8 @@ public class OpensearchService extends AbstractFrontierService
         String user = configuration.getOrDefault(Constants.OSUserParamName, "admin");
         String password = configuration.getOrDefault(Constants.OSPasswordParamName, "admin");
 
+        String scheme = configuration.getOrDefault(Constants.OSSchemeParamName, "http");
+
         totalNumberAssignments =
                 Integer.parseInt(
                         configuration.getOrDefault(
@@ -167,7 +169,7 @@ public class OpensearchService extends AbstractFrontierService
 
         // Create a client.
         RestClientBuilder builder =
-                RestClient.builder(new HttpHost(host, Integer.parseInt(port), "http"))
+                RestClient.builder(new HttpHost(host, Integer.parseInt(port), scheme))
                         .setHttpClientConfigCallback(
                                 new RestClientBuilder.HttpClientConfigCallback() {
                                     @Override
