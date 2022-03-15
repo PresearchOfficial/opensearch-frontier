@@ -144,7 +144,7 @@ public class OpensearchService extends AbstractFrontierService
         String host = configuration.getOrDefault(Constants.OSHostParamName, "localhost");
         String port = configuration.getOrDefault(Constants.OSPortParamName, "9200");
 
-        String user = configuration.getOrDefault(Constants.OSUserParamName, "admin");
+        String user = configuration.get(Constants.OSUserParamName);
         String password = configuration.getOrDefault(Constants.OSPasswordParamName, "admin");
 
         String scheme = configuration.getOrDefault(Constants.OSSchemeParamName, "http");
@@ -160,25 +160,27 @@ public class OpensearchService extends AbstractFrontierService
                         configuration.getOrDefault(
                                 Constants.minsBetweenAssignmentRefreshParamName, "10"));
 
-        // Establish credentials to use basic authentication.
-        // Only for demo purposes. Don't specify your credentials in code.
-        final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-
-        credentialsProvider.setCredentials(
-                AuthScope.ANY, new UsernamePasswordCredentials(user, password));
-
         // Create a client.
         RestClientBuilder builder =
-                RestClient.builder(new HttpHost(host, Integer.parseInt(port), scheme))
-                        .setHttpClientConfigCallback(
-                                new RestClientBuilder.HttpClientConfigCallback() {
-                                    @Override
-                                    public HttpAsyncClientBuilder customizeHttpClient(
-                                            HttpAsyncClientBuilder httpClientBuilder) {
-                                        return httpClientBuilder.setDefaultCredentialsProvider(
-                                                credentialsProvider);
-                                    }
-                                });
+                RestClient.builder(new HttpHost(host, Integer.parseInt(port), scheme));
+
+        if (user != null) {
+            // Establish credentials to use basic authentication.
+            // Only for demo purposes. Don't specify your credentials in code.
+            final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+            credentialsProvider.setCredentials(
+                    AuthScope.ANY, new UsernamePasswordCredentials(user, password));
+
+            builder.setHttpClientConfigCallback(
+                    new RestClientBuilder.HttpClientConfigCallback() {
+                        @Override
+                        public HttpAsyncClientBuilder customizeHttpClient(
+                                HttpAsyncClientBuilder httpClientBuilder) {
+                            return httpClientBuilder.setDefaultCredentialsProvider(
+                                    credentialsProvider);
+                        }
+                    });
+        }
 
         // set to true?
         builder.setCompressionEnabled(false);
