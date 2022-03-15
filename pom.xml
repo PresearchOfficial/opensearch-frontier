@@ -10,6 +10,11 @@
 
 	<description>URLFrontier service implementation using Opensearch as a back-end</description>
 
+	<properties>
+        <!-- needed to build within Docker -->
+		<skipFormatCode>false</skipFormatCode>
+	</properties>
+
 	<build>
 		<plugins>
 			<plugin>
@@ -34,6 +39,7 @@
 					</execution>
 				</executions>
 				<configuration>
+					<skip>${skipFormatCode}</skip>
 					<googleJavaFormatOptions>
 						<aosp>true</aosp>
 						<fixImportsOnly>false</fixImportsOnly>

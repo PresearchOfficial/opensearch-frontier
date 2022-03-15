@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
@@ -53,10 +54,14 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
+import org.opensearch.action.ActionListener;
 import org.opensearch.action.bulk.BulkProcessor;
 import org.opensearch.action.bulk.BulkRequest;
 import org.opensearch.action.bulk.BulkResponse;
 import org.opensearch.action.index.IndexRequest;
+import org.opensearch.action.search.MultiSearchRequest;
+import org.opensearch.action.search.MultiSearchResponse;
+import org.opensearch.action.search.MultiSearchResponse.Item;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.client.RequestOptions;
@@ -126,7 +131,7 @@ public class OpensearchService extends AbstractFrontierService
     // current partitions
     // this in an intermediate level before the queues in AbstractFrontierService
     // they need to be kept in sync and the mapping must be revisited
-    protected final Map<String, List<QueueWithinCrawl>> partitions =
+    protected final Map<String, Set<QueueWithinCrawl>> partitions =
             Collections.synchronizedMap(new LinkedHashMap<>());
 
     // no explicit config
@@ -241,6 +246,13 @@ public class OpensearchService extends AbstractFrontierService
         // this allows to add or remove queues for the mappings we already had
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(this, 1, 1, TimeUnit.SECONDS);
+
+        int URLsPerQueueToCache = 10;
+        int numRequestsPerBatch = 50;
+        int msecBetweenReadRequests = 100;
+
+        new QueuesPopulator(numRequestsPerBatch, URLsPerQueueToCache, msecBetweenReadRequests)
+                .start();
     }
 
     @Override
@@ -263,96 +275,12 @@ public class OpensearchService extends AbstractFrontierService
 
         int countSent = 0;
 
-        // have stuff in the cache?
-        if (q.getBuffer() != null && q.getBuffer().size() > 0) {
-            for (; countSent < maxURLsPerQueue && !q.getBuffer().isEmpty(); countSent++) {
-                responseObserver.onNext(q.getBuffer().remove(0));
-            }
-        }
-
-        // used all the cache - no need to go further
-        if (countSent == maxURLsPerQueue) {
-            return countSent;
-        }
-
-        SearchRequest searchRequest = new SearchRequest(this.statusIndexName);
-        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        org.opensearch.index.query.BoolQueryBuilder queryBuilder =
-                org.opensearch.index.query.QueryBuilders.boolQuery();
-        // query on nextFetchDate and also on the queue key and crawlid
-        queryBuilder.filter(
-                org.opensearch.index.query.QueryBuilders.termQuery(
-                        Constants.QueueIDFieldName, key.getQueue()));
-        queryBuilder.filter(
-                org.opensearch.index.query.QueryBuilders.termQuery(
-                        Constants.CrawlIDFieldName, key.getCrawlid()));
-        queryBuilder.filter(
-                org.opensearch.index.query.QueryBuilders.rangeQuery("nextFetchDate")
-                        .lte(Instant.ofEpochSecond(now)));
-
-        searchSourceBuilder.query(queryBuilder);
-        // ask for twice as many so that we can cache the rest
-        searchSourceBuilder.size(maxURLsPerQueue * 2);
-        searchSourceBuilder.explain(false);
-        searchSourceBuilder.trackTotalHits(false);
-
-        // sort by ascending nextFetchDate i.e. older documents first
-        searchSourceBuilder.sort("nextFetchDate", SortOrder.ASC);
-
-        searchRequest.source(searchSourceBuilder);
-
-        try {
-            // get the results
-            SearchResponse results = client.search(searchRequest, RequestOptions.DEFAULT);
-            for (SearchHit hits : results.getHits()) {
-                Map<String, Object> fields = hits.getSourceAsMap();
-                // we need to convert from the fields to a URLInfo object
-                Builder urlInfoBuilder = URLInfo.newBuilder();
-                urlInfoBuilder.setUrl(fields.get("url").toString());
-                urlInfoBuilder.setCrawlID(fields.get(Constants.CrawlIDFieldName).toString());
-                urlInfoBuilder.setKey(fields.get(Constants.QueueIDFieldName).toString());
-
-                // add the metadata if they exist
-                Map<String, List<String>> mdAsMap =
-                        (Map<String, List<String>>) fields.get("metadata");
-                if (mdAsMap != null) {
-                    Iterator<Entry<String, List<String>>> mdIter = mdAsMap.entrySet().iterator();
-                    while (mdIter.hasNext()) {
-                        Entry<String, List<String>> mdEntry = mdIter.next();
-                        String mdkey = mdEntry.getKey();
-                        Object mdValObj = mdEntry.getValue();
-
-                        crawlercommons.urlfrontier.Urlfrontier.StringList.Builder slbuilder =
-                                StringList.newBuilder();
-
-                        // single value
-                        if (mdValObj instanceof String) {
-                            slbuilder.addValues((String) mdValObj);
-                        }
-                        // multi valued
-                        else {
-                            slbuilder.addAllValues((List<String>) mdValObj);
-                        }
-                        urlInfoBuilder.putMetadata(mdkey, slbuilder.build());
-                    }
-                }
-
-                if (countSent < maxURLsPerQueue) {
-                    responseObserver.onNext(urlInfoBuilder.build());
-                    countSent++;
-                }
-                // add it to the cache for the queue so that we don't need to query again
-                else {
-                    q.addToBuffer(urlInfoBuilder.build());
-                }
-            }
-
-        } catch (IOException e) {
-            LOG.error(
-                    "Exception when loading results for {} with nextFetchDate {}",
-                    key,
-                    Instant.ofEpochSecond(now),
-                    e);
+        // only use URLs from the cache
+        while (q.bufferSize() > 0 && countSent < maxURLsPerQueue) {
+            URLInfo next = q.getBuffer().remove(0);
+            q.holdUntil(next.getUrl(), now + secsUntilRequestable);
+            responseObserver.onNext(next);
+            countSent++;
         }
 
         return countSent;
@@ -441,9 +369,8 @@ public class OpensearchService extends AbstractFrontierService
                     // no need to wait for the next sync
                     if (partitions.containsKey(Integer.toString(assignmentHash))) {
                         partitions.putIfAbsent(
-                                Integer.toString(assignmentHash),
-                                new LinkedList<QueueWithinCrawl>());
-                        List<QueueWithinCrawl> localqueues =
+                                Integer.toString(assignmentHash), new HashSet<QueueWithinCrawl>());
+                        Set<QueueWithinCrawl> localqueues =
                                 partitions.get(Integer.toString(assignmentHash));
                         if (!localqueues.contains(qk)) {
                             localqueues.add(qk);
@@ -553,7 +480,7 @@ public class OpensearchService extends AbstractFrontierService
         for (String oldPart : partitions.keySet()) {
             if (!newPartitions.contains(oldPart)) {
                 // remove it and the corresponding queues
-                List<QueueWithinCrawl> queues4partitions = partitions.remove(oldPart);
+                Set<QueueWithinCrawl> queues4partitions = partitions.remove(oldPart);
                 // can be null if we haven't mapped the queues to it yet
                 if (queues4partitions != null) {
                     for (QueueWithinCrawl mappedQueues : queues4partitions) {
@@ -566,7 +493,7 @@ public class OpensearchService extends AbstractFrontierService
         for (String part : newPartitions) {
             // store an empty list for now, it will be populated when the mappings
             // are refreshed
-            partitions.putIfAbsent(part, new ArrayList<QueueWithinCrawl>());
+            partitions.putIfAbsent(part, new HashSet<QueueWithinCrawl>());
         }
 
         assignmentsChanged.set(true);
@@ -620,7 +547,7 @@ public class OpensearchService extends AbstractFrontierService
         int totalQueues = 0;
         int partitionsCount = 0;
 
-        final List<QueueWithinCrawl> found = new ArrayList<>();
+        final Set<QueueWithinCrawl> found = new HashSet<>();
 
         try {
 
@@ -633,7 +560,7 @@ public class OpensearchService extends AbstractFrontierService
                 partitionsCount++;
 
                 // existing list
-                List<QueueWithinCrawl> existingList = partitions.get(partitionID);
+                Set<QueueWithinCrawl> existingList = partitions.get(partitionID);
 
                 // query the queues index to get all the ones having this partition id
                 SearchRequest searchRequest = new SearchRequest(this.queuesIndexName);
@@ -654,6 +581,7 @@ public class OpensearchService extends AbstractFrontierService
                     QueueWithinCrawl qwc = QueueWithinCrawl.get(queueID, crawlID);
                     queues.putIfAbsent(qwc, new Queue());
                     found.add(qwc);
+                    totalQueues++;
                 }
 
                 // delete the ones that have disappeared since
@@ -879,5 +807,162 @@ public class OpensearchService extends AbstractFrontierService
                         .build();
         responseObserver.onNext(stats);
         responseObserver.onCompleted();
+    }
+
+    /**
+     * Iterates on the queues and populates them with data from Opensearch, independently of
+     * requests coming in.
+     */
+    class QueuesPopulator extends Thread implements ActionListener<MultiSearchResponse> {
+
+        /** TODO Replace with a cache with TTL in case errors prevent things from being removed * */
+        private final Set<String> queuesBeingPopulated = new HashSet<>();
+
+        private Instant lastQuery = Instant.now();
+
+        private final int minDelayBetweenLoads;
+        private final int urlsToPutInCache;
+        private final int numrequests;
+
+        QueuesPopulator(int numrequests, int urlsToPutInCache, int minDelayBetweenLoads) {
+            this.numrequests = numrequests;
+            this.urlsToPutInCache = urlsToPutInCache;
+            this.minDelayBetweenLoads = minDelayBetweenLoads;
+        }
+
+        @Override
+        public void run() {
+            while (!isClosed) {
+                // implement delay between requests
+                long msecTowait =
+                        minDelayBetweenLoads
+                                - (Instant.now().toEpochMilli() - lastQuery.toEpochMilli());
+                if (msecTowait > 0) {
+                    try {
+                        Thread.sleep(msecTowait);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    continue;
+                }
+
+                synchronized (queues) {
+
+                    // do as async multisearch
+                    MultiSearchRequest msr = new MultiSearchRequest();
+
+                    Iterator<Entry<QueueWithinCrawl, QueueInterface>> iterator =
+                            queues.entrySet().iterator();
+
+                    lastQuery = Instant.now();
+
+                    while (iterator.hasNext() && msr.requests().size() < numrequests) {
+                        Entry<QueueWithinCrawl, QueueInterface> e = iterator.next();
+
+                        // check that it isn't blocked
+                        if (e.getValue().getBlockedUntil() >= lastQuery.getEpochSecond()) {
+                            continue;
+                        }
+
+                        if (queuesBeingPopulated.contains(e.getKey().toString())) {
+                            continue;
+                        }
+
+                        SearchRequest searchRequest = new SearchRequest(statusIndexName);
+                        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+                        org.opensearch.index.query.BoolQueryBuilder queryBuilder =
+                                org.opensearch.index.query.QueryBuilders.boolQuery();
+                        // query on nextFetchDate and also on the queue key and crawlid
+                        queryBuilder.filter(
+                                org.opensearch.index.query.QueryBuilders.termQuery(
+                                        Constants.QueueIDFieldName, e.getKey().getQueue()));
+                        queryBuilder.filter(
+                                org.opensearch.index.query.QueryBuilders.termQuery(
+                                        Constants.CrawlIDFieldName, e.getKey().getCrawlid()));
+                        queryBuilder.filter(
+                                org.opensearch.index.query.QueryBuilders.rangeQuery("nextFetchDate")
+                                        .lte(lastQuery));
+
+                        searchSourceBuilder.query(queryBuilder);
+                        // ask for twice as many so that we can cache the rest
+                        searchSourceBuilder.size(urlsToPutInCache);
+                        searchSourceBuilder.explain(false);
+                        searchSourceBuilder.trackTotalHits(false);
+
+                        // sort by ascending nextFetchDate i.e. older documents first
+                        searchSourceBuilder.sort("nextFetchDate", SortOrder.ASC);
+
+                        searchRequest.source(searchSourceBuilder);
+                        msr.add(searchRequest);
+
+                        queuesBeingPopulated.add(e.getKey().toString());
+                    }
+
+                    if (!msr.requests().isEmpty()) {
+                        client.msearchAsync(msr, RequestOptions.DEFAULT, this);
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void onResponse(MultiSearchResponse response) {
+            LOG.debug("Multisearch took {}", response.getTook());
+
+            for (Item item : response) {
+                if (item.isFailure()) {
+                    // TODO deal with the failure
+                    continue;
+                }
+                for (SearchHit hits : item.getResponse().getHits()) {
+                    Map<String, Object> fields = hits.getSourceAsMap();
+                    // we need to convert from the fields to a URLInfo object
+                    Builder urlInfoBuilder = URLInfo.newBuilder();
+                    urlInfoBuilder.setUrl(fields.get("url").toString());
+                    urlInfoBuilder.setCrawlID(fields.get(Constants.CrawlIDFieldName).toString());
+                    urlInfoBuilder.setKey(fields.get(Constants.QueueIDFieldName).toString());
+
+                    // add the metadata if they exist
+                    Map<String, List<String>> mdAsMap =
+                            (Map<String, List<String>>) fields.get("metadata");
+                    if (mdAsMap != null) {
+                        Iterator<Entry<String, List<String>>> mdIter =
+                                mdAsMap.entrySet().iterator();
+                        while (mdIter.hasNext()) {
+                            Entry<String, List<String>> mdEntry = mdIter.next();
+                            String mdkey = mdEntry.getKey();
+                            Object mdValObj = mdEntry.getValue();
+
+                            crawlercommons.urlfrontier.Urlfrontier.StringList.Builder slbuilder =
+                                    StringList.newBuilder();
+
+                            // single value
+                            if (mdValObj instanceof String) {
+                                slbuilder.addValues((String) mdValObj);
+                            }
+                            // multi valued
+                            else {
+                                slbuilder.addAllValues((List<String>) mdValObj);
+                            }
+                            urlInfoBuilder.putMetadata(mdkey, slbuilder.build());
+                        }
+                    }
+
+                    QueueWithinCrawl qwc =
+                            QueueWithinCrawl.get(
+                                    urlInfoBuilder.getKey(), urlInfoBuilder.getCrawlID());
+
+                    queuesBeingPopulated.remove(qwc.toString());
+
+                    Queue queue = (Queue) queues.get(qwc);
+                    queue.addToBuffer(urlInfoBuilder.build());
+                }
+            }
+        }
+
+        @Override
+        public void onFailure(Exception e) {
+            LOG.error("Exception received when querying Opensearch", e);
+        }
     }
 }

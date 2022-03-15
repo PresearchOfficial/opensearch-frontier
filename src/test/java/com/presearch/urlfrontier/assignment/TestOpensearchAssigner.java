@@ -80,7 +80,7 @@ public class TestOpensearchAssigner {
         String host = opensearchContainer.getHost();
         Integer port = opensearchContainer.getFirstMappedPort();
 
-        int heartbeatSec = 2;
+        int heartbeatSec = 10;
 
         Map<String, String> configuration = new HashMap<>();
         configuration.put(Constants.OSHostParamName, host);
@@ -130,7 +130,7 @@ public class TestOpensearchAssigner {
         String host = opensearchContainer.getHost();
         Integer port = opensearchContainer.getFirstMappedPort();
 
-        int heartbeatSec = 2;
+        int heartbeatSec = 10;
 
         Map<String, String> configuration = new HashMap<>();
         configuration.put(Constants.OSHostParamName, host);
