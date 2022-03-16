@@ -47,7 +47,7 @@ public class TestOpensearchAssigner {
 
     @Rule
     public GenericContainer opensearchContainer =
-            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:latest"))
+            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.2.3"))
                     .withExposedPorts(9200)
                     .withEnv("plugins.security.disabled", "true")
                     .withEnv("discovery.type", "single-node")
@@ -59,6 +59,8 @@ public class TestOpensearchAssigner {
         Integer port = opensearchContainer.getFirstMappedPort();
 
         Map<String, String> configuration = new HashMap<>();
+        configuration.put(Constants.OSUserParamName, "admin");
+        configuration.put(Constants.OSPasswordParamName, "admin");
         configuration.put(Constants.OSHostParamName, host);
         configuration.put(Constants.OSPortParamName, port.toString());
 
@@ -85,6 +87,8 @@ public class TestOpensearchAssigner {
         Map<String, String> configuration = new HashMap<>();
         configuration.put(Constants.OSHostParamName, host);
         configuration.put(Constants.OSPortParamName, port.toString());
+        configuration.put(Constants.OSUserParamName, "admin");
+        configuration.put(Constants.OSPasswordParamName, "admin");
         configuration.put(IAssigner.HEARBEAT_CONFIG_NAME, Integer.toString(heartbeatSec));
 
         IAssigner first = createAssigner(configuration, "FIRST");
@@ -133,6 +137,8 @@ public class TestOpensearchAssigner {
         int heartbeatSec = 10;
 
         Map<String, String> configuration = new HashMap<>();
+        configuration.put(Constants.OSUserParamName, "admin");
+        configuration.put(Constants.OSPasswordParamName, "admin");
         configuration.put(Constants.OSHostParamName, host);
         configuration.put(Constants.OSPortParamName, port.toString());
         configuration.put(IAssigner.HEARBEAT_CONFIG_NAME, Integer.toString(heartbeatSec));
