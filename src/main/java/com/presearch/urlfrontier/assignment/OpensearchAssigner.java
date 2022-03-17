@@ -153,7 +153,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
                     @Override
                     public void afterBulk(long arg0, BulkRequest request, Throwable arg2) {
-                        LOG.debug("{} Exception obtained from Opensearch", uuid, arg2);
+                        LOG.error("{} Exception obtained from Opensearch", uuid, arg2);
                     }
 
                     @Override
@@ -251,7 +251,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         mapFields1.put("frontierID", uuid);
         mapFields1.put("lastSeen", timestamp);
         IndexRequest qrequest1 =
-                new IndexRequest(this.frontiersIndexName).source(mapFields1).id(uuid);
+                new IndexRequest(OpensearchAssigner.frontiersIndexName).source(mapFields1).id(uuid);
         try {
             client.index(qrequest1, RequestOptions.DEFAULT);
         } catch (IOException e1) {
@@ -292,7 +292,9 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 Map<String, Object> fields = hit.getSourceAsMap();
                 long lastSeen = (long) fields.get("lastSeen");
                 // too old ?
-                if (lastSeen < timeToDie) continue;
+                if (lastSeen < timeToDie) {
+                    continue;
+                }
                 String frontierID = fields.get("frontierID").toString();
                 int assignmentHash = (int) fields.get("assignmentHash");
                 if (frontierID.equals(uuid)) {
@@ -303,14 +305,22 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             }
 
             // now search on the frontiers
-            searchRequest.indices(this.frontiersIndexName);
+            searchRequest.indices(OpensearchAssigner.frontiersIndexName);
+            searchRequest.source().seqNoAndPrimaryTerm(Boolean.TRUE);
             results = client.search(searchRequest, RequestOptions.DEFAULT);
 
             for (SearchHit hit : results.getHits()) {
                 Map<String, Object> fields = hit.getSourceAsMap();
                 long lastSeen = (long) fields.get("lastSeen");
                 // too old ?
-                if (lastSeen < timeToDie) continue;
+                if (lastSeen < timeToDie) {
+                    DeleteRequest drequest =
+                            new DeleteRequest(OpensearchAssigner.frontiersIndexName, hit.getId());
+                    drequest.setIfPrimaryTerm(hit.getPrimaryTerm());
+                    drequest.setIfSeqNo(hit.getSeqNo());
+                    bulkProcessor.add(drequest);
+                    continue;
+                }
                 String frontierID = fields.get("frontierID").toString();
                 if (!frontierIDs.contains(frontierID)) {
                     frontierIDs.add(frontierID);
@@ -322,7 +332,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         }
 
         LOG.info(
-                "Cleanup - frontier {} found {} active assignment(s) and {} frontier(s)",
+                "Cleanup - frontier {} found {} active assignment(s) and {} active frontier(s)",
                 uuid,
                 active,
                 frontierIDs.size());
@@ -372,7 +382,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             LOG.info("Frontier {} about to delete {} assignments", uuid, difference);
             for (Integer todelete : partitionsAssigned.subList(0, difference)) {
                 DeleteRequest drequest =
-                        new DeleteRequest(this.assignmentsIndexName, todelete.toString());
+                        new DeleteRequest(
+                                OpensearchAssigner.assignmentsIndexName, todelete.toString());
                 bulkProcessor.add(drequest);
             }
         }
@@ -386,7 +397,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         for (Integer partition : partitionsAssigned) {
             mapFields.put("assignmentHash", partition);
             IndexRequest qrequest =
-                    new IndexRequest(this.assignmentsIndexName)
+                    new IndexRequest(OpensearchAssigner.assignmentsIndexName)
                             .source(mapFields)
                             .id(partition.toString());
             bulkProcessor.add(qrequest);
