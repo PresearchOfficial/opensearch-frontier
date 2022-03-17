@@ -64,10 +64,13 @@ public class TestOpensearchAssigner {
         configuration.put(Constants.OSHostParamName, host);
         configuration.put(Constants.OSPortParamName, port.toString());
 
+        int heartbeatSec = 10;
+        configuration.put(IAssigner.HEARBEAT_CONFIG_NAME, Integer.toString(heartbeatSec));
+
         IAssigner assigner = createAssigner(configuration, "FIRST");
 
-        // sleep for a few seconds
-        Thread.sleep(2 * 1000);
+        // sleep for several heartbeats
+        Thread.sleep(2 * heartbeatSec * 1000);
 
         // on his own - should get the whole lot
         Assert.assertEquals(
@@ -95,7 +98,7 @@ public class TestOpensearchAssigner {
         IAssigner second = createAssigner(configuration, "SECOND");
 
         // sleep for several heartbeats so that the assigners can converge
-        Thread.sleep(10 * heartbeatSec * 1000);
+        Thread.sleep(5 * heartbeatSec * 1000);
 
         // check that they both have half the assignments
         Assert.assertEquals(
@@ -148,7 +151,7 @@ public class TestOpensearchAssigner {
         IAssigner third = createAssigner(configuration, "THIRD");
 
         // sleep for several heartbeats to give the assigners time to converge
-        Thread.sleep(20 * heartbeatSec * 1000);
+        Thread.sleep(5 * heartbeatSec * 1000);
 
         // check that no partition has been left behind
         // and that we were able to deal with remainders
@@ -156,5 +159,9 @@ public class TestOpensearchAssigner {
         Assert.assertEquals(334, first.getPartitionsAssigned().size());
         Assert.assertEquals(333, second.getPartitionsAssigned().size());
         Assert.assertEquals(333, third.getPartitionsAssigned().size());
+
+        first.close();
+        second.close();
+        third.close();
     }
 }

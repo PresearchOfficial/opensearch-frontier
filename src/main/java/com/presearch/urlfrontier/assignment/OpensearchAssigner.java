@@ -18,6 +18,7 @@ import com.presearch.urlfrontier.Constants;
 import com.presearch.urlfrontier.IndexCreation;
 import com.presearch.urlfrontier.OpensearchService;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,7 +36,6 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
-import org.joda.time.Instant;
 import org.opensearch.action.bulk.BulkProcessor;
 import org.opensearch.action.bulk.BulkRequest;
 import org.opensearch.action.bulk.BulkResponse;
@@ -143,6 +143,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         // added or removed
         final BulkProcessor.Listener listener =
                 new BulkProcessor.Listener() {
+
                     @Override
                     public void afterBulk(long arg0, BulkRequest request, BulkResponse response) {
                         LOG.debug(
@@ -185,13 +186,65 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                         .setConcurrentRequests(concurrentRequests)
                         .build();
 
+        new Hearbeat(hb).start();
+
         // create a timer so that the heartbeat and other tasks are done as
         // expected
         // value could be overridden in the config
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
-        executorService.scheduleAtFixedRate(this, 0, hb, TimeUnit.SECONDS);
+        executorService.scheduleAtFixedRate(this, hb, hb, TimeUnit.SECONDS);
 
         LOG.info("Started frontier {} with heartbeat every {} sec and TTL {} sec", uuid, hb, ttl);
+    }
+
+    class Hearbeat extends Thread {
+
+        private Instant lastQuery = Instant.EPOCH;
+
+        private final int delaySec;
+
+        Hearbeat(int delay) {
+            delaySec = delay;
+        }
+
+        @Override
+        public void run() {
+
+            while (true) {
+                if (closed) return;
+
+                // implement delay between requests
+                long msecTowait =
+                        delaySec * 1000 - (Instant.now().toEpochMilli() - lastQuery.toEpochMilli());
+                if (msecTowait > 0) {
+                    try {
+                        Thread.sleep(msecTowait);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    continue;
+                }
+
+                LOG.info("heartbeat - frontier {}", uuid);
+
+                lastQuery = Instant.now();
+
+                long timestamp = lastQuery.toEpochMilli();
+
+                final Map<String, Object> mapFields1 = new HashMap<>();
+                mapFields1.put("frontierID", uuid);
+                mapFields1.put("lastSeen", timestamp);
+                IndexRequest qrequest1 =
+                        new IndexRequest(OpensearchAssigner.frontiersIndexName)
+                                .source(mapFields1)
+                                .id(uuid);
+                try {
+                    client.index(qrequest1, RequestOptions.DEFAULT);
+                } catch (IOException e1) {
+                    LOG.error("Exception caught when registering frontier", e1);
+                }
+            }
+        }
     }
 
     @Override
@@ -243,7 +296,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 "Frontier {} got the list of its {} partitions in {} msec",
                 uuid,
                 partitions.size(),
-                end.getMillis() - start.getMillis());
+                end.toEpochMilli() - start.toEpochMilli());
 
         return partitions;
     }
@@ -253,27 +306,11 @@ public class OpensearchAssigner implements IAssigner, Runnable {
      * the set of available assignments.
      */
     @Override
-    // called for every heartbeat
     public void run() {
-
-        LOG.debug("heartbeat - frontier {}", uuid);
 
         if (closed) return;
 
-        long timestamp = Instant.now().getMillis();
-
-        final Map<String, Object> mapFields1 = new HashMap<>();
-        mapFields1.put("frontierID", uuid);
-        mapFields1.put("lastSeen", timestamp);
-        IndexRequest qrequest1 =
-                new IndexRequest(OpensearchAssigner.frontiersIndexName).source(mapFields1).id(uuid);
-        try {
-            client.index(qrequest1, RequestOptions.DEFAULT);
-        } catch (IOException e1) {
-            LOG.error("Exception caught when registering frontier", e1);
-        }
-
-        LOG.debug("Cleanup - frontier {} ready to cleanup assignments", uuid);
+        long timestamp = Instant.now().toEpochMilli();
 
         final boolean[] found_array = new boolean[totalNumberOfAssignments];
         int active = 0;
@@ -380,13 +417,15 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                     assignmentsNeeded);
             // try to claim additional assignments
             if (inactive > 0) {
-                int added = 0;
-                for (int i = 0; i < found_array.length && added < Math.abs(difference); i++) {
+                List<Integer> availableAssignments = new ArrayList<>(inactive);
+                for (int i = 0; i < found_array.length; i++) {
                     if (!found_array[i]) {
-                        partitionsAssigned.add(i);
-                        added++;
+                        availableAssignments.add(i);
                     }
                 }
+                // take a random selection of stuff available
+                Collections.shuffle(availableAssignments);
+                partitionsAssigned.addAll(availableAssignments.subList(0, Math.abs(difference)));
             }
         } else {
             // too many, need to offload a few
@@ -403,7 +442,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             }
         }
 
-        LOG.info("Frontier {} about to write {} assignments", uuid, partitionsAssigned.size());
+        LOG.info("Frontier {} about to commit its {} assignments", uuid, partitionsAssigned.size());
 
         final Map<String, Object> mapFields = new HashMap<>();
         mapFields.put("frontierID", uuid);
