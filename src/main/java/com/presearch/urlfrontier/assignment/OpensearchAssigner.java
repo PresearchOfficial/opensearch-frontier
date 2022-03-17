@@ -242,7 +242,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         LOG.info(
                 "Frontier {} got the list of its {} partitions in {} msec",
                 uuid,
-                partitions,
+                partitions.size(),
                 end.getMillis() - start.getMillis());
 
         return partitions;

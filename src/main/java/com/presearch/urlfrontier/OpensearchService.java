@@ -850,6 +850,8 @@ public class OpensearchService extends AbstractFrontierService
                     continue;
                 }
 
+                LOG.debug("QueuesPopulator - queue size {}", queues.size());
+
                 synchronized (queues) {
 
                     // do as async multisearch
