@@ -190,6 +190,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         // value could be overridden in the config
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(this, 0, hb, TimeUnit.SECONDS);
+
+        LOG.info("Started frontier {} with heartbeat every {} sec and TTL {} sec", uuid, hb, ttl);
     }
 
     @Override
@@ -206,6 +208,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
     @Override
     public Set<String> getPartitionsAssigned() {
         SearchRequest searchRequest = new SearchRequest(assignmentsIndexName);
+
+        Instant start = Instant.now();
 
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
 
@@ -232,6 +236,15 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         } catch (Exception e) {
             LOG.error("Exception caught when retrieving partitions for {}", uuid, e);
         }
+
+        Instant end = Instant.now();
+
+        LOG.info(
+                "Frontier {} got the list of its {} partitions in {} msec",
+                uuid,
+                partitions,
+                end.getMillis() - start.getMillis());
+
         return partitions;
     }
 
@@ -242,6 +255,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
     @Override
     // called for every heartbeat
     public void run() {
+
+        LOG.debug("heartbeat - frontier {}", uuid);
 
         if (closed) return;
 

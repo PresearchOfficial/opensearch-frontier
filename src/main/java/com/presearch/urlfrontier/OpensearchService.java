@@ -476,7 +476,7 @@ public class OpensearchService extends AbstractFrontierService
      */
     public void setAssignmentsChanged() {
 
-        LOG.debug("Assigmnents changed");
+        LOG.debug("Assignments changed");
 
         Set<String> newPartitions = assigner.getPartitionsAssigned();
 
@@ -904,6 +904,10 @@ public class OpensearchService extends AbstractFrontierService
 
                     if (!msr.requests().isEmpty()) {
                         client.msearchAsync(msr, RequestOptions.DEFAULT, this);
+                        LOG.debug(
+                                "{} queuesBeingPopulated - {} multisearch size {}",
+                                queuesBeingPopulated.size(),
+                                msr.requests().size());
                     }
                 }
             }
