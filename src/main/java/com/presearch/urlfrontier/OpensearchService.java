@@ -117,6 +117,8 @@ public class OpensearchService extends AbstractFrontierService
 
                 @Override
                 public void afterBulk(long arg0, BulkRequest request, Throwable arg2) {
+                    if (arg2 instanceof org.apache.http.ConnectionClosedException && isClosed)
+                        return;
                     LOG.error("Exception obtained from Opensearch", arg2);
                 }
 
@@ -263,6 +265,7 @@ public class OpensearchService extends AbstractFrontierService
     public void close() throws IOException {
         isClosed = true;
         assigner.close();
+        bulkProcessor.close();
         client.close();
     }
 

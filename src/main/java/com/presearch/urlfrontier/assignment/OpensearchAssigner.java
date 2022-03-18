@@ -154,6 +154,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
                     @Override
                     public void afterBulk(long arg0, BulkRequest request, Throwable arg2) {
+                        if (arg2 instanceof org.apache.http.ConnectionClosedException && closed)
+                            return;
                         LOG.error("{} Exception obtained from Opensearch", uuid, arg2);
                     }
 
@@ -188,9 +190,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
         new Hearbeat(hb).start();
 
-        // create a timer so that the heartbeat and other tasks are done as
-        // expected
-        // value could be overridden in the config
+        // create a timer so that the handling of assignments is done periodically
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(this, hb, hb, TimeUnit.SECONDS);
 
@@ -255,6 +255,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
     @Override
     public void close() throws IOException {
         closed = true;
+        bulkProcessor.close();
         client.close();
     }
 
@@ -338,6 +339,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             frontierIDs.add(uuid);
         }
 
+        if (closed) return;
+
         try {
             SearchResponse results = client.search(searchRequest, RequestOptions.DEFAULT);
             for (SearchHit hit : results.getHits()) {
@@ -356,6 +359,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 active++;
             }
 
+            if (closed) return;
+
             // now search on the frontiers
             searchRequest.indices(OpensearchAssigner.frontiersIndexName);
             searchRequest.source().seqNoAndPrimaryTerm(Boolean.TRUE);
@@ -366,6 +371,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 long lastSeen = (long) fields.get("lastSeen");
                 // too old ?
                 if (lastSeen < timeToDie) {
+                    if (closed) return;
                     DeleteRequest drequest =
                             new DeleteRequest(OpensearchAssigner.frontiersIndexName, hit.getId());
                     drequest.setIfPrimaryTerm(hit.getPrimaryTerm());
@@ -449,6 +455,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         mapFields.put("lastSeen", timestamp);
 
         for (Integer partition : partitionsAssigned) {
+            if (closed) return;
+
             mapFields.put("assignmentHash", partition);
             IndexRequest qrequest =
                     new IndexRequest(OpensearchAssigner.assignmentsIndexName)
