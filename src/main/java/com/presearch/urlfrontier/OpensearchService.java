@@ -28,6 +28,7 @@ import crawlercommons.urlfrontier.service.AbstractFrontierService;
 import crawlercommons.urlfrontier.service.QueueInterface;
 import crawlercommons.urlfrontier.service.QueueWithinCrawl;
 import io.grpc.stub.StreamObserver;
+import io.prometheus.client.Counter;
 import java.io.Closeable;
 import java.io.IOException;
 import java.time.Instant;
@@ -109,6 +110,31 @@ public class OpensearchService extends AbstractFrontierService
     private final AtomicBoolean assignmentsChanged = new AtomicBoolean(false);
 
     private Instant timeLastRefresh;
+
+    private static final Counter putURLs_calls =
+            Counter.build()
+                    .name("frontier_putURLs_calls_total")
+                    .help("Number of times putURLs has been called.")
+                    .register();
+
+    private static final Counter putURLs_urls_count =
+            Counter.build()
+                    .name("frontier_putURLs_total")
+                    .help("Number of URLs sent to the Frontier")
+                    .register();
+
+    private static final Counter putURLs_discovered_count =
+            Counter.build()
+                    .name("frontier_putURLs_discovered_total")
+                    .help("Count of discovered URLs sent to the Frontier")
+                    .labelNames("discovered")
+                    .register();
+
+    private static final Counter putURLs_completed_count =
+            Counter.build()
+                    .name("frontier_putURLs_completed_total")
+                    .help("Number of completed URLs")
+                    .register();
 
     private final BulkProcessor.Listener listener =
             new BulkProcessor.Listener() {
@@ -299,19 +325,25 @@ public class OpensearchService extends AbstractFrontierService
 
         AtomicBoolean completed = new AtomicBoolean(false);
 
+        putURLs_calls.inc();
+
         return new StreamObserver<URLItem>() {
 
             @Override
             public void onNext(URLItem value) {
+
+                putURLs_urls_count.inc();
 
                 Instant nextFetchDate = null;
                 boolean discovered = true;
                 URLInfo info;
 
                 if (value.hasDiscovered()) {
+                    putURLs_discovered_count.labels("true").inc();
                     info = value.getDiscovered().getInfo();
                     nextFetchDate = Instant.now();
                 } else {
+                    putURLs_discovered_count.labels("false").inc();
                     KnownURLItem known = value.getKnown();
                     info = known.getInfo();
                     if (known.getRefetchableFromDate() != 0)
@@ -426,6 +458,8 @@ public class OpensearchService extends AbstractFrontierService
 
                     if (nextFetchDate != null) {
                         builder.field("nextFetchDate", nextFetchDate);
+                    } else if (!discovered) {
+                        putURLs_completed_count.inc();
                     }
 
                     builder.endObject();
