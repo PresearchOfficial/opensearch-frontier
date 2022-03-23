@@ -1010,7 +1010,10 @@ public class OpensearchService extends AbstractFrontierService
 
         @Override
         public void onFailure(Exception e) {
-            LOG.error("Exception received when querying Opensearch", e);
+            if (isClosed && e instanceof org.apache.http.ConnectionClosedException) {
+            } else {
+                LOG.error("Exception received when querying Opensearch", e);
+            }
         }
     }
 }
