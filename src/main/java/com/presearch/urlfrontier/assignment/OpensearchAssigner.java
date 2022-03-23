@@ -254,6 +254,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
     @Override
     public void close() throws IOException {
+        LOG.info("close() method called for assigner {}", uuid);
         closed = true;
         bulkProcessor.close();
         client.close();
@@ -386,7 +387,10 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 continue;
             }
         } catch (Exception e) {
-            LOG.error("Exception caught when scanning partitions", e);
+            LOG.error("Exception caught when scanning partitions - will try again later", e);
+            // the count of frontiers will be incorrect
+            // no point going any further
+            return;
         }
 
         LOG.info(

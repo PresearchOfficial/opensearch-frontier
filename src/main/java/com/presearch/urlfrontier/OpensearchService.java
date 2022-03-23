@@ -289,6 +289,7 @@ public class OpensearchService extends AbstractFrontierService
 
     @Override
     public void close() throws IOException {
+        LOG.info("close() method called");
         isClosed = true;
         assigner.close();
         bulkProcessor.close();
