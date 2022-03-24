@@ -558,6 +558,53 @@ public class OpensearchService extends AbstractFrontierService
         }
     }
 
+    private int handleResponsesMappingsRefreshes(
+            MultiSearchResponse responses, List<String> partitionIDs) {
+        int queueCount = 0;
+
+        final Set<QueueWithinCrawl> found = new HashSet<>();
+
+        for (int i = 0; i < responses.getResponses().length; i++) {
+            Item item = responses.getResponses()[i];
+            SearchResponse searchResponse = item.getResponse();
+            if (searchResponse == null) {
+                continue;
+            }
+
+            SearchHits hits = searchResponse.getHits();
+
+            String partitionID = partitionIDs.get(i);
+
+            for (SearchHit h : hits.getHits()) {
+                String queueID = h.getSourceAsMap().get(Constants.QueueIDFieldName).toString();
+                String crawlID = h.getSourceAsMap().get(Constants.CrawlIDFieldName).toString();
+                QueueWithinCrawl qwc = QueueWithinCrawl.get(queueID, crawlID);
+                queues.putIfAbsent(qwc, new Queue());
+                found.add(qwc);
+                queueCount++;
+            }
+
+            // existing list
+            Set<QueueWithinCrawl> existingList = partitions.get(partitionID);
+
+            // delete the ones that have disappeared since
+            for (QueueWithinCrawl existing : existingList) {
+                if (!found.contains(existing)) {
+                    queues.remove(existing);
+                }
+            }
+
+            // replace values
+            partitions.put(partitionID, found);
+
+            LOG.debug("Found {} queues for partition {}", found.size(), partitionID);
+
+            found.clear();
+        }
+
+        return queueCount;
+    }
+
     /**
      * Refresh the mappings from partitions to queues. Might take some time compared to scanning the
      * whole set of queues but means there is less latency. As the number of frontiers instances
@@ -579,78 +626,75 @@ public class OpensearchService extends AbstractFrontierService
 
         refreshingMappings.set(true);
 
-        long start = System.currentTimeMillis();
-
         // iterate on the partitions keys
         // copy the values so that we can check that they haven't been deleted in the
         // meantime
-        ArrayList<String> partitionsID = new ArrayList(partitions.keySet());
+        final ArrayList<String> partitionsID = new ArrayList<>(partitions.keySet());
 
-        int totalQueues = 0;
-        int partitionsCount = 0;
-
-        final Set<QueueWithinCrawl> found = new HashSet<>();
+        final int maxNumQueriesInMultiQuery = 10;
 
         try {
 
-            for (String partitionID : partitionsID) {
+            MultiSearchRequest msr = new MultiSearchRequest();
+            final ArrayList<String> batchPartitionIDs = new ArrayList<>(maxNumQueriesInMultiQuery);
+
+            Iterator<String> iterator = partitionsID.iterator();
+
+            while (iterator.hasNext()) {
+                String partitionID = iterator.next();
                 // gone?
                 if (!partitions.containsKey(partitionID)) continue;
 
-                LOG.debug("Getting queues for partition {}", partitionID);
-
-                partitionsCount++;
-
-                // existing list
-                Set<QueueWithinCrawl> existingList = partitions.get(partitionID);
-
                 // query the queues index to get all the ones having this partition id
-                SearchRequest searchRequest = new SearchRequest(this.queuesIndexName);
+                SearchRequest searchRequest = new SearchRequest(OpensearchService.queuesIndexName);
                 SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
                 // assume there won't be more than 10K
                 searchSourceBuilder.size(10000);
                 searchSourceBuilder.query(
                         QueryBuilders.boolQuery()
-                                .filter(QueryBuilders.termQuery("assignmentHash", partitionID)));
+                                .filter(
+                                        QueryBuilders.termQuery(
+                                                Constants.AssignmentHashFieldName, partitionID)));
                 searchRequest.source(searchSourceBuilder);
 
-                SearchResponse searchResponse =
-                        client.search(searchRequest, RequestOptions.DEFAULT);
-                SearchHits hits = searchResponse.getHits();
-                for (SearchHit h : hits.getHits()) {
-                    String queueID = h.getSourceAsMap().get(Constants.QueueIDFieldName).toString();
-                    String crawlID = h.getSourceAsMap().get(Constants.CrawlIDFieldName).toString();
-                    QueueWithinCrawl qwc = QueueWithinCrawl.get(queueID, crawlID);
-                    queues.putIfAbsent(qwc, new Queue());
-                    found.add(qwc);
-                    totalQueues++;
+                msr.add(searchRequest);
+                batchPartitionIDs.add(partitionID);
+
+                if (msr.requests().size() == maxNumQueriesInMultiQuery) {
+                    // send that batch
+                    LOG.debug("Getting queues for {} partition(s)", maxNumQueriesInMultiQuery);
+                    long start = System.currentTimeMillis();
+                    final MultiSearchResponse responses =
+                            client.msearch(msr, RequestOptions.DEFAULT);
+                    final int totalQueues =
+                            handleResponsesMappingsRefreshes(responses, batchPartitionIDs);
+                    final long timeSpent = System.currentTimeMillis() - start;
+                    // finished the lot
+                    LOG.info(
+                            "Queues returned {} for {} partitions in {} msec",
+                            totalQueues,
+                            msr.requests().size(),
+                            timeSpent);
+                    msr = new MultiSearchRequest();
+                    batchPartitionIDs.clear();
                 }
-
-                // delete the ones that have disappeared since
-                for (QueueWithinCrawl existing : existingList) {
-                    if (!found.contains(existing)) {
-                        queues.remove(existing);
-                    }
-                }
-
-                // replace values
-                partitions.put(partitionID, found);
-
-                LOG.debug("Found {} queues for partition {}", found.size(), partitionID);
-
-                found.clear();
             }
 
-            long timeSpent = System.currentTimeMillis() - start;
-
-            // finished the lot
-            LOG.info(
-                    "Queues returned {} [now {}] for {} partitions in {} msec",
-                    totalQueues,
-                    queues.size(),
-                    partitionsCount,
-                    timeSpent);
-
+            // any left?
+            if (msr.requests().size() > 0) {
+                // send that batch
+                final long start = System.currentTimeMillis();
+                final MultiSearchResponse responses = client.msearch(msr, RequestOptions.DEFAULT);
+                final int totalQueues =
+                        handleResponsesMappingsRefreshes(responses, batchPartitionIDs);
+                final long timeSpent = System.currentTimeMillis() - start;
+                // finished the lot
+                LOG.info(
+                        "Queues returned {} for {} partitions in {} msec",
+                        totalQueues,
+                        msr.requests().size(),
+                        timeSpent);
+            }
         } catch (IOException e) {
             LOG.error("Exception caught when reading mapping from Opensearch", e);
         } finally {
@@ -670,7 +714,8 @@ public class OpensearchService extends AbstractFrontierService
         int countDeleted = 0;
 
         // delete the URLs in Opensearch then the queues
-        DeleteByQueryRequest dbqrequest = new DeleteByQueryRequest(this.statusIndexName);
+        DeleteByQueryRequest dbqrequest =
+                new DeleteByQueryRequest(OpensearchService.statusIndexName);
         dbqrequest.setQuery(QueryBuilders.termQuery(Constants.CrawlIDFieldName, normalisedCrawlID));
 
         try {
@@ -678,7 +723,7 @@ public class OpensearchService extends AbstractFrontierService
                     client.deleteByQuery(dbqrequest, RequestOptions.DEFAULT);
             countDeleted = (int) deletion.getDeleted();
 
-            dbqrequest.indices(this.queuesIndexName);
+            dbqrequest.indices(OpensearchService.queuesIndexName);
             deletion = client.deleteByQuery(dbqrequest, RequestOptions.DEFAULT);
 
             // remove them from the partitions
@@ -722,7 +767,8 @@ public class OpensearchService extends AbstractFrontierService
 
         // delete the queue in the Opensearch indices
         DeleteByQueryRequest dbqrequest =
-                new DeleteByQueryRequest(this.statusIndexName, this.queuesIndexName);
+                new DeleteByQueryRequest(
+                        OpensearchService.statusIndexName, OpensearchService.queuesIndexName);
         BoolQueryBuilder bq = QueryBuilders.boolQuery();
         bq.must(QueryBuilders.termQuery(Constants.QueueIDFieldName, qwc.getQueue()));
         bq.must(QueryBuilders.termQuery(Constants.CrawlIDFieldName, qwc.getCrawlid()));
@@ -804,7 +850,7 @@ public class OpensearchService extends AbstractFrontierService
         }
 
         // size is the total number of URLs in the index
-        CountRequest countRequest = new CountRequest(this.statusIndexName);
+        CountRequest countRequest = new CountRequest(OpensearchService.statusIndexName);
         try {
             // was this for a specific queue?
             if (filteredQueue != null) {
@@ -824,7 +870,7 @@ public class OpensearchService extends AbstractFrontierService
             completed = countResult.getCount();
 
             // finally the total number of queues
-            countRequest = new CountRequest(this.queuesIndexName);
+            countRequest = new CountRequest(OpensearchService.queuesIndexName);
             countResult = client.count(countRequest, RequestOptions.DEFAULT);
             numQueues = countResult.getCount();
 

@@ -21,6 +21,7 @@ public interface Constants {
     String AssignmentClassParamName = "assignment.class";
     String QueueIDFieldName = "queueID";
     String CrawlIDFieldName = "crawlID";
+    String AssignmentHashFieldName = "assignmentHash";
     String OSConcRequParamName = "opensearch.concurrent.requests";
     String OSBulkActionsParamName = "opensearch.bulk.actions";
     String OSFlushIntervalParamName = "opensearch.flush.interval";
