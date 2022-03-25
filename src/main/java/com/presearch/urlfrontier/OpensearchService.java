@@ -14,6 +14,10 @@
  */
 package com.presearch.urlfrontier;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+import com.github.benmanes.caffeine.cache.RemovalListener;
 import com.presearch.urlfrontier.assignment.AssignmentsListener;
 import com.presearch.urlfrontier.assignment.IAssigner;
 import com.presearch.urlfrontier.assignment.OpensearchAssigner;
@@ -55,6 +59,8 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
+import org.checkerframework.checker.nullness.qual.NonNull;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.opensearch.action.ActionListener;
 import org.opensearch.action.bulk.BulkProcessor;
 import org.opensearch.action.bulk.BulkRequest;
@@ -901,10 +907,14 @@ public class OpensearchService extends AbstractFrontierService
      * Iterates on the queues and populates them with data from Opensearch, independently of
      * requests coming in.
      */
-    class QueuesPopulator extends Thread implements ActionListener<MultiSearchResponse> {
+    class QueuesPopulator extends Thread
+            implements ActionListener<MultiSearchResponse>, RemovalListener<String, Object> {
 
-        /** TODO Replace with a cache with TTL in case errors prevent things from being removed * */
-        private final Set<String> queuesBeingPopulated = new HashSet<>();
+        private final Cache<String, Object> queuesBeingPopulated =
+                Caffeine.newBuilder()
+                        .expireAfterWrite(5, TimeUnit.MINUTES)
+                        .removalListener(this)
+                        .build();
 
         private Instant lastQuery = Instant.now();
 
@@ -954,7 +964,10 @@ public class OpensearchService extends AbstractFrontierService
                             continue;
                         }
 
-                        if (queuesBeingPopulated.contains(e.getKey().toString())) {
+                        if (queuesBeingPopulated.getIfPresent(e.getKey().toString()) != null) {
+                            LOG.debug(
+                                    "QueuesPopulator - queue already getting populated",
+                                    e.getKey().toString());
                             continue;
                         }
 
@@ -984,15 +997,14 @@ public class OpensearchService extends AbstractFrontierService
 
                         searchRequest.source(searchSourceBuilder);
                         msr.add(searchRequest);
-
-                        queuesBeingPopulated.add(e.getKey().toString());
+                        queuesBeingPopulated.put(e.getKey().toString(), e.getKey().toString());
                     }
 
                     if (!msr.requests().isEmpty()) {
                         client.msearchAsync(msr, RequestOptions.DEFAULT, this);
                         LOG.debug(
                                 "{} queuesBeingPopulated - {} multisearch size {}",
-                                queuesBeingPopulated.size(),
+                                queuesBeingPopulated.estimatedSize(),
                                 msr.requests().size());
                     }
                 }
@@ -1046,7 +1058,7 @@ public class OpensearchService extends AbstractFrontierService
                             QueueWithinCrawl.get(
                                     urlInfoBuilder.getKey(), urlInfoBuilder.getCrawlID());
 
-                    queuesBeingPopulated.remove(qwc.toString());
+                    queuesBeingPopulated.invalidate(qwc.toString());
 
                     Queue queue = (Queue) queues.get(qwc);
                     queue.addToBuffer(urlInfoBuilder.build());
@@ -1058,8 +1070,15 @@ public class OpensearchService extends AbstractFrontierService
         public void onFailure(Exception e) {
             if (isClosed && e instanceof org.apache.http.ConnectionClosedException) {
             } else {
-                LOG.error("Exception received when querying Opensearch", e);
+                LOG.error("QueuesPopulation - exception received when querying Opensearch", e);
             }
+        }
+
+        @Override
+        public void onRemoval(
+                @Nullable String key, @Nullable Object value, @NonNull RemovalCause cause) {
+            if (cause.wasEvicted())
+                LOG.error("QueuesPopulation - key {} removed from cache because of timeout", key);
         }
     }
 }
