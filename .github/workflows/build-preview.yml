@@ -44,7 +44,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            presearch/opensearch-frontier:LATEST
+            presearch/opensearch-frontier:latest
             presearch/opensearch-frontier:${{ steps.version.outputs.VERSION }}
 
       - name: Image digest
