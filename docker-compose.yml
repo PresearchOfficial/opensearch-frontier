@@ -39,5 +39,16 @@ services:
     networks:
       - presearch
 
+  frontier:
+    image: presearch/opensearch-frontier:0.1-SNAPSHOT
+    container_name: frontier
+    depends_on:
+      - "opensearch-node1"
+    ports:
+      - 7071:7071
+    command: "implementation=com.presearch.urlfrontier.OpensearchService assignment.class=com.presearch.urlfrontier.assignment.OpensearchAssigner opensearch.port=9200 opensearch.scheme=http opensearch.hostname=opensearch-node1"
+    networks:
+      - presearch
+
 networks:
   presearch:

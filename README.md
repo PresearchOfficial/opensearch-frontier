@@ -30,12 +30,12 @@ or
 
 ## Run the service
 
-The *docker-compose.yml* file can be used to spin an instance of [Opensearch](https://opensearch.org/) and opensearch-dashboards.
+The *docker-compose.yml* file can be used to spin an instance of [Opensearch](https://opensearch.org/), opensearch-dashboards as well as a Frontier instance.
 
-Starting the Frontier is done with 
+Alternatively, the Frontier could be started separately with  
 
 `$ java -Xmx2G -cp target/urlfrontier-opensearch-service-*.jar crawlercommons.urlfrontier.service.URLFrontierServer -c config.ini`
 
 The indices are created automatically in URLFrontier but the script *Opensearch_Delete_Indices.sh* can be used to delete them and restart a fresh crawl.
 
-
+You will need to use the _urlfrontier_ CLI to inject seeds into the frontier.
