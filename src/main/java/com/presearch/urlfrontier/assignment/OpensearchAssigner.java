@@ -234,6 +234,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 final Map<String, Object> mapFields1 = new HashMap<>();
                 mapFields1.put("frontierID", uuid);
                 mapFields1.put("lastSeen", timestamp);
+                mapFields1.put("address", listener.getHostAndPort());
                 IndexRequest qrequest1 =
                         new IndexRequest(OpensearchAssigner.frontiersIndexName)
                                 .source(mapFields1)
@@ -282,11 +283,15 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
         HashSet<String> partitions = new HashSet<>();
 
+        HashSet<String> nodesAddresses = new HashSet<>();
+
         try {
             // get the results
             SearchResponse results = client.search(searchRequest, RequestOptions.DEFAULT);
             for (SearchHit hit : results.getHits()) {
-                partitions.add(hit.getSourceAsMap().get("assignmentHash").toString());
+                Map<String, Object> sam = hit.getSourceAsMap();
+                partitions.add(sam.get("assignmentHash").toString());
+                nodesAddresses.add(sam.get("address").toString());
             }
         } catch (Exception e) {
             LOG.error("Exception caught when retrieving partitions for {}", uuid, e);
@@ -299,6 +304,9 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 uuid,
                 partitions.size(),
                 end.toEpochMilli() - start.toEpochMilli());
+
+        // tell the frontier who's in the cluster
+        listener.setNodes(nodesAddresses);
 
         return partitions;
     }

@@ -1078,7 +1078,7 @@ public class OpensearchService extends AbstractFrontierService
         public void onRemoval(
                 @Nullable String key, @Nullable Object value, @NonNull RemovalCause cause) {
             if (cause.wasEvicted())
-                LOG.error("QueuesPopulation - key {} removed from cache because of timeout", key);
+                LOG.debug("QueuesPopulation - key {} removed from cache because of timeout", key);
         }
     }
 }

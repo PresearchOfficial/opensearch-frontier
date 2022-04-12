@@ -14,6 +14,8 @@
  */
 package com.presearch.urlfrontier.assignment;
 
+import java.util.Set;
+
 /**
  * Implemented by Frontiers so that the Assigners can notify them that there has been a change in
  * the partitions assigned to them.
@@ -21,4 +23,10 @@ package com.presearch.urlfrontier.assignment;
 public interface AssignmentsListener {
     /** Notifies that there has been a change in the assignments of partitions */
     void setAssignmentsChanged();
+
+    /** Used by heartbeat to identify a Frontier * */
+    String getHostAndPort();
+
+    /** Report back to the assigner with the list of nodes in the cluster * */
+    public void setNodes(Set<String> n);
 }

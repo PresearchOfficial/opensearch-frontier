@@ -30,7 +30,7 @@ public class TestOpensearchService {
 
     @Rule
     public GenericContainer opensearchContainer =
-            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.2.3"))
+            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.3.1"))
                     .withExposedPorts(9200)
                     .withEnv("plugins.security.disabled", "true")
                     .withEnv("discovery.type", "single-node")
