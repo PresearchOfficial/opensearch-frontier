@@ -14,7 +14,7 @@
  */
 package com.presearch.urlfrontier.assignment;
 
-import java.util.Set;
+import java.util.List;
 
 /**
  * Implemented by Frontiers so that the Assigners can notify them that there has been a change in
@@ -28,5 +28,5 @@ public interface AssignmentsListener {
     String getHostAndPort();
 
     /** Report back to the assigner with the list of nodes in the cluster * */
-    public void setNodes(Set<String> n);
+    public void setNodes(List<String> n);
 }

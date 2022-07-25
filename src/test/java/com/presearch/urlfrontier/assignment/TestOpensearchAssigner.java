@@ -17,8 +17,8 @@ package com.presearch.urlfrontier.assignment;
 import com.presearch.urlfrontier.Constants;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
@@ -51,12 +51,12 @@ public class TestOpensearchAssigner {
         }
 
         @Override
-        public void setNodes(Set<String> n) {}
+        public void setNodes(List<String> n) {}
     }
 
     @Rule
     public GenericContainer opensearchContainer =
-            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.3.1"))
+            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.3.4"))
                     .withExposedPorts(9200)
                     .withEnv("plugins.security.disabled", "true")
                     .withEnv("discovery.type", "single-node")

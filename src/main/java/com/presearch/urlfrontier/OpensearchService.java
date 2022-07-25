@@ -22,6 +22,7 @@ import com.presearch.urlfrontier.assignment.AssignmentsListener;
 import com.presearch.urlfrontier.assignment.IAssigner;
 import com.presearch.urlfrontier.assignment.OpensearchAssigner;
 import crawlercommons.urlfrontier.CrawlID;
+import crawlercommons.urlfrontier.Urlfrontier.AckMessage.Status;
 import crawlercommons.urlfrontier.Urlfrontier.KnownURLItem;
 import crawlercommons.urlfrontier.Urlfrontier.Stats;
 import crawlercommons.urlfrontier.Urlfrontier.StringList;
@@ -32,7 +33,6 @@ import crawlercommons.urlfrontier.service.AbstractFrontierService;
 import crawlercommons.urlfrontier.service.QueueInterface;
 import crawlercommons.urlfrontier.service.QueueWithinCrawl;
 import io.grpc.stub.StreamObserver;
-import io.prometheus.client.Counter;
 import java.io.Closeable;
 import java.io.IOException;
 import java.time.Instant;
@@ -116,31 +116,6 @@ public class OpensearchService extends AbstractFrontierService
     private final AtomicBoolean assignmentsChanged = new AtomicBoolean(false);
 
     private Instant timeLastRefresh;
-
-    private static final Counter putURLs_calls =
-            Counter.build()
-                    .name("frontier_putURLs_calls_total")
-                    .help("Number of times putURLs has been called.")
-                    .register();
-
-    private static final Counter putURLs_urls_count =
-            Counter.build()
-                    .name("frontier_putURLs_total")
-                    .help("Number of URLs sent to the Frontier")
-                    .register();
-
-    private static final Counter putURLs_discovered_count =
-            Counter.build()
-                    .name("frontier_putURLs_discovered_total")
-                    .help("Count of discovered URLs sent to the Frontier")
-                    .labelNames("discovered")
-                    .register();
-
-    private static final Counter putURLs_completed_count =
-            Counter.build()
-                    .name("frontier_putURLs_completed_total")
-                    .help("Number of completed URLs")
-                    .register();
 
     private final BulkProcessor.Listener listener =
             new BulkProcessor.Listener() {
@@ -327,190 +302,144 @@ public class OpensearchService extends AbstractFrontierService
     }
 
     @Override
-    public StreamObserver<URLItem> putURLs(
-            StreamObserver<crawlercommons.urlfrontier.Urlfrontier.String> responseObserver) {
+    protected Status putURLItem(URLItem value) {
 
-        AtomicBoolean completed = new AtomicBoolean(false);
+        putURLs_urls_count.inc();
 
-        putURLs_calls.inc();
+        Instant nextFetchDate = null;
+        boolean discovered = true;
+        URLInfo info;
 
-        return new StreamObserver<URLItem>() {
+        if (value.hasDiscovered()) {
+            putURLs_discovered_count.labels("true").inc();
+            info = value.getDiscovered().getInfo();
+            nextFetchDate = Instant.now();
+        } else {
+            putURLs_discovered_count.labels("false").inc();
+            KnownURLItem known = value.getKnown();
+            info = known.getInfo();
+            if (known.getRefetchableFromDate() != 0)
+                nextFetchDate = Instant.ofEpochSecond(known.getRefetchableFromDate());
+            discovered = Boolean.FALSE;
+        }
 
-            @Override
-            public void onNext(URLItem value) {
+        String Qkey = info.getKey();
+        String url = info.getUrl();
+        String crawlID = CrawlID.normaliseCrawlID(info.getCrawlID());
 
-                putURLs_urls_count.inc();
+        // has a queue key been defined? if not use the hostname
+        if (Qkey.equals("")) {
+            LOG.debug("key missing for {}", url);
+            Qkey = provideMissingKey(url);
+            if (Qkey == null) {
+                LOG.error("Malformed URL {}", url);
+                return Status.SKIPPED;
+            }
+        }
 
-                Instant nextFetchDate = null;
-                boolean discovered = true;
-                URLInfo info;
+        // check that the key is not too long
+        if (Qkey.length() > 255) {
+            LOG.error("Key too long: {}", Qkey);
+            return Status.SKIPPED;
+        }
 
-                if (value.hasDiscovered()) {
-                    putURLs_discovered_count.labels("true").inc();
-                    info = value.getDiscovered().getInfo();
-                    nextFetchDate = Instant.now();
-                } else {
-                    putURLs_discovered_count.labels("false").inc();
-                    KnownURLItem known = value.getKnown();
-                    info = known.getInfo();
-                    if (known.getRefetchableFromDate() != 0)
-                        nextFetchDate = Instant.ofEpochSecond(known.getRefetchableFromDate());
-                    discovered = Boolean.FALSE;
+        QueueWithinCrawl qk = QueueWithinCrawl.get(Qkey, crawlID);
+
+        // ignore this URL if the queue is being deleted
+        if (queuesBeingDeleted.containsKey(qk)) {
+            LOG.info("Not adding {} as its queue {} is being deleted", url, qk);
+            return Status.SKIPPED;
+        }
+
+        // create an entry in the queues index
+        // String queueName and crawlID
+        // is this a queue we already handle?
+        // most likely scenario
+        if (!getQueues().containsKey(qk)) {
+            Map<String, String> mapFields = new HashMap<>();
+            mapFields.put(Constants.QueueIDFieldName, qk.getQueue());
+            mapFields.put(Constants.CrawlIDFieldName, qk.getCrawlid());
+
+            // compute an assignment hash for the key
+            int assignmentHash = Math.abs(qk.hashCode() % totalNumberAssignments);
+            mapFields.put("assignmentHash", Integer.toString(assignmentHash));
+
+            // small optimisation - we know it is a host we have an assignment for
+            // no need to wait for the next sync
+            if (partitions.containsKey(Integer.toString(assignmentHash))) {
+                partitions.putIfAbsent(
+                        Integer.toString(assignmentHash), new HashSet<QueueWithinCrawl>());
+                Set<QueueWithinCrawl> localqueues =
+                        partitions.get(Integer.toString(assignmentHash));
+                if (!localqueues.contains(qk)) {
+                    localqueues.add(qk);
                 }
-
-                String Qkey = info.getKey();
-                String url = info.getUrl();
-                String crawlID = CrawlID.normaliseCrawlID(info.getCrawlID());
-
-                // has a queue key been defined? if not use the hostname
-                if (Qkey.equals("")) {
-                    LOG.debug("key missing for {}", url);
-                    Qkey = provideMissingKey(url);
-                    if (Qkey == null) {
-                        LOG.error("Malformed URL {}", url);
-                        responseObserver.onNext(
-                                crawlercommons.urlfrontier.Urlfrontier.String.newBuilder()
-                                        .setValue(url)
-                                        .build());
-                        return;
-                    }
-                }
-
-                // check that the key is not too long
-                if (Qkey.length() > 255) {
-                    LOG.error("Key too long: {}", Qkey);
-                    responseObserver.onNext(
-                            crawlercommons.urlfrontier.Urlfrontier.String.newBuilder()
-                                    .setValue(url)
-                                    .build());
-                    return;
-                }
-
-                QueueWithinCrawl qk = QueueWithinCrawl.get(Qkey, crawlID);
-
-                // ignore this URL if the queue is being deleted
-                if (queuesBeingDeleted.containsKey(qk)) {
-                    LOG.info("Not adding {} as its queue {} is being deleted", url, qk);
-                    responseObserver.onNext(
-                            crawlercommons.urlfrontier.Urlfrontier.String.newBuilder()
-                                    .setValue(url)
-                                    .build());
-                    return;
-                }
-
-                // create an entry in the queues index
-                // String queueName and crawlID
-                // is this a queue we already handle?
-                // most likely scenario
-                if (!queues.containsKey(qk)) {
-                    Map<String, String> mapFields = new HashMap<>();
-                    mapFields.put(Constants.QueueIDFieldName, qk.getQueue());
-                    mapFields.put(Constants.CrawlIDFieldName, qk.getCrawlid());
-
-                    // compute an assignment hash for the key
-                    int assignmentHash = Math.abs(qk.hashCode() % totalNumberAssignments);
-                    mapFields.put("assignmentHash", Integer.toString(assignmentHash));
-
-                    // small optimisation - we know it is a host we have an assignment for
-                    // no need to wait for the next sync
-                    if (partitions.containsKey(Integer.toString(assignmentHash))) {
-                        partitions.putIfAbsent(
-                                Integer.toString(assignmentHash), new HashSet<QueueWithinCrawl>());
-                        Set<QueueWithinCrawl> localqueues =
-                                partitions.get(Integer.toString(assignmentHash));
-                        if (!localqueues.contains(qk)) {
-                            localqueues.add(qk);
-                        }
-                        // add it to the list of queues
-                        queues.putIfAbsent(qk, new Queue());
-                    }
-
-                    String sha256hex =
-                            org.apache.commons.codec.digest.DigestUtils.sha256Hex(qk.toString());
-
-                    IndexRequest qrequest =
-                            new IndexRequest(queuesIndexName)
-                                    .source(mapFields)
-                                    .create(true)
-                                    .id(sha256hex);
-                    bulkProcessor.add(qrequest);
-                }
-
-                String sha256hex =
-                        org.apache.commons.codec.digest.DigestUtils.sha256Hex(
-                                qk.toString() + "_" + url);
-
-                // have a cache mechanism to avoid sending duplicate content?
-
-                // send to Opensearch as a bulk
-                try {
-                    XContentBuilder builder = XContentFactory.jsonBuilder().startObject();
-                    builder.field("url", url);
-                    builder.field(Constants.QueueIDFieldName, qk.getQueue());
-                    builder.field(Constants.CrawlIDFieldName, qk.getCrawlid());
-
-                    builder.startObject("metadata");
-
-                    Iterator<Entry<String, StringList>> entries =
-                            info.getMetadataMap().entrySet().iterator();
-
-                    while (entries.hasNext()) {
-                        Entry<String, StringList> entry = entries.next();
-                        // String mdkey = entry.getKey().replaceAll("\\.", "%2E");
-                        String mdkey = entry.getKey();
-                        builder.array(mdkey, entry.getValue().getValuesList().toArray());
-                    }
-
-                    builder.endObject();
-
-                    if (nextFetchDate != null) {
-                        builder.field("nextFetchDate", nextFetchDate);
-                    } else if (!discovered) {
-                        putURLs_completed_count.inc();
-                    }
-
-                    builder.endObject();
-
-                    // check that we don't overwrite an existing entry
-                    // When create is used, the index operation will fail if a document
-                    // by that id already exists in the index.
-
-                    IndexRequest request = new IndexRequest(statusIndexName);
-                    request.source(builder).id(sha256hex).create(discovered);
-
-                    if (doRouting) {
-                        request.routing(Qkey);
-                    }
-
-                    LOG.debug("Sending to ES buffer {} with ID {}", url, sha256hex);
-
-                    bulkProcessor.add(request);
-
-                    // ack everything for now - fire and forget
-                    responseObserver.onNext(
-                            crawlercommons.urlfrontier.Urlfrontier.String.newBuilder()
-                                    .setValue(url)
-                                    .build());
-                } catch (Exception e) {
-                    LOG.error("Exception while sending {}", url, e);
-                    responseObserver.onNext(
-                            crawlercommons.urlfrontier.Urlfrontier.String.newBuilder()
-                                    .setValue(url)
-                                    .build());
-                }
+                // add it to the list of queues
+                getQueues().putIfAbsent(qk, new Queue());
             }
 
-            @Override
-            public void onError(Throwable t) {
-                LOG.error("Throwable caught", t);
+            String sha256hex = org.apache.commons.codec.digest.DigestUtils.sha256Hex(qk.toString());
+
+            IndexRequest qrequest =
+                    new IndexRequest(queuesIndexName).source(mapFields).create(true).id(sha256hex);
+            bulkProcessor.add(qrequest);
+        }
+
+        String sha256hex =
+                org.apache.commons.codec.digest.DigestUtils.sha256Hex(qk.toString() + "_" + url);
+
+        // have a cache mechanism to avoid sending duplicate content?
+
+        // send to Opensearch as a bulk
+        try {
+            XContentBuilder builder = XContentFactory.jsonBuilder().startObject();
+            builder.field("url", url);
+            builder.field(Constants.QueueIDFieldName, qk.getQueue());
+            builder.field(Constants.CrawlIDFieldName, qk.getCrawlid());
+
+            builder.startObject("metadata");
+
+            Iterator<Entry<String, StringList>> entries =
+                    info.getMetadataMap().entrySet().iterator();
+
+            while (entries.hasNext()) {
+                Entry<String, StringList> entry = entries.next();
+                // String mdkey = entry.getKey().replaceAll("\\.", "%2E");
+                String mdkey = entry.getKey();
+                builder.array(mdkey, entry.getValue().getValuesList().toArray());
             }
 
-            @Override
-            public void onCompleted() {
-                completed.set(true);
-                responseObserver.onCompleted();
+            builder.endObject();
+
+            if (nextFetchDate != null) {
+                builder.field("nextFetchDate", nextFetchDate);
+            } else if (!discovered) {
+                putURLs_completed_count.inc();
             }
-        };
+
+            builder.endObject();
+
+            // check that we don't overwrite an existing entry
+            // When create is used, the index operation will fail if a document
+            // by that id already exists in the index.
+
+            IndexRequest request = new IndexRequest(statusIndexName);
+            request.source(builder).id(sha256hex).create(discovered);
+
+            if (doRouting) {
+                request.routing(Qkey);
+            }
+
+            LOG.debug("Sending to ES buffer {} with ID {}", url, sha256hex);
+
+            bulkProcessor.add(request);
+
+            // ack everything for now - fire and forget
+            return Status.OK;
+        } catch (Exception e) {
+            LOG.error("Exception while sending {}", url, e);
+            return Status.FAIL;
+        }
     }
 
     @Override
@@ -532,7 +461,7 @@ public class OpensearchService extends AbstractFrontierService
                 // can be null if we haven't mapped the queues to it yet
                 if (queues4partitions != null) {
                     for (QueueWithinCrawl mappedQueues : queues4partitions) {
-                        queues.remove(mappedQueues);
+                        getQueues().remove(mappedQueues);
                     }
                 }
             }
@@ -585,7 +514,7 @@ public class OpensearchService extends AbstractFrontierService
                 String queueID = h.getSourceAsMap().get(Constants.QueueIDFieldName).toString();
                 String crawlID = h.getSourceAsMap().get(Constants.CrawlIDFieldName).toString();
                 QueueWithinCrawl qwc = QueueWithinCrawl.get(queueID, crawlID);
-                queues.putIfAbsent(qwc, new Queue());
+                getQueues().putIfAbsent(qwc, new Queue());
                 found.add(qwc);
                 queueCount++;
             }
@@ -596,7 +525,7 @@ public class OpensearchService extends AbstractFrontierService
             // delete the ones that have disappeared since
             for (QueueWithinCrawl existing : existingList) {
                 if (!found.contains(existing)) {
-                    queues.remove(existing);
+                    getQueues().remove(existing);
                 }
             }
 
@@ -711,8 +640,8 @@ public class OpensearchService extends AbstractFrontierService
 
     @Override
     public void deleteCrawl(
-            crawlercommons.urlfrontier.Urlfrontier.String crawlID,
-            io.grpc.stub.StreamObserver<crawlercommons.urlfrontier.Urlfrontier.Integer>
+            crawlercommons.urlfrontier.Urlfrontier.DeleteCrawlMessage crawlID,
+            io.grpc.stub.StreamObserver<crawlercommons.urlfrontier.Urlfrontier.Long>
                     responseObserver) {
 
         final String normalisedCrawlID = CrawlID.normaliseCrawlID(crawlID.getValue());
@@ -740,8 +669,10 @@ public class OpensearchService extends AbstractFrontierService
                     });
 
             // then from the queues
-            synchronized (queues) {
-                queues.entrySet().removeIf(q -> q.getKey().getCrawlid().equals(normalisedCrawlID));
+            synchronized (getQueues()) {
+                getQueues()
+                        .entrySet()
+                        .removeIf(q -> q.getKey().getCrawlid().equals(normalisedCrawlID));
             }
 
         } catch (IOException e) {
@@ -749,7 +680,7 @@ public class OpensearchService extends AbstractFrontierService
         }
 
         responseObserver.onNext(
-                crawlercommons.urlfrontier.Urlfrontier.Integer.newBuilder()
+                crawlercommons.urlfrontier.Urlfrontier.Long.newBuilder()
                         .setValue(countDeleted)
                         .build());
         responseObserver.onCompleted();
@@ -765,7 +696,7 @@ public class OpensearchService extends AbstractFrontierService
     @Override
     public void deleteQueue(
             crawlercommons.urlfrontier.Urlfrontier.QueueWithinCrawlParams request,
-            StreamObserver<crawlercommons.urlfrontier.Urlfrontier.Integer> responseObserver) {
+            StreamObserver<crawlercommons.urlfrontier.Urlfrontier.Long> responseObserver) {
         QueueWithinCrawl qwc = QueueWithinCrawl.get(request.getKey(), request.getCrawlID());
         int countDeleted = 0;
 
@@ -788,7 +719,7 @@ public class OpensearchService extends AbstractFrontierService
                     (k, v) -> {
                         v.remove(qwc);
                     });
-            queues.remove(qwc);
+            getQueues().remove(qwc);
             countDeleted = (int) deletion.getDeleted() - 1;
         } catch (IOException e) {
             LOG.error(
@@ -799,7 +730,7 @@ public class OpensearchService extends AbstractFrontierService
         }
 
         responseObserver.onNext(
-                crawlercommons.urlfrontier.Urlfrontier.Integer.newBuilder()
+                crawlercommons.urlfrontier.Urlfrontier.Long.newBuilder()
                         .setValue(countDeleted)
                         .build());
         responseObserver.onCompleted();
@@ -826,7 +757,7 @@ public class OpensearchService extends AbstractFrontierService
         long completed = 0;
         long numLocalQueues = 0;
 
-        Collection<QueueInterface> _queues = queues.values();
+        Collection<QueueInterface> _queues = getQueues().values();
 
         String filteredQueue = null;
 
@@ -835,7 +766,7 @@ public class OpensearchService extends AbstractFrontierService
             _queues = new LinkedList<>();
             filteredQueue = request.getKey();
 
-            QueueInterface q = queues.get(filteredQueue);
+            QueueInterface q = getQueues().get(filteredQueue);
             if (q != null) {
                 _queues.add(q);
             } else {
@@ -848,7 +779,7 @@ public class OpensearchService extends AbstractFrontierService
 
         // backed by the queues so can result in a
         // ConcurrentModificationException
-        synchronized (queues) {
+        synchronized (getQueues()) {
             for (QueueInterface q : _queues) {
                 inProc += q.getInProcess(now);
                 numLocalQueues++;
@@ -944,15 +875,15 @@ public class OpensearchService extends AbstractFrontierService
                     continue;
                 }
 
-                LOG.debug("QueuesPopulator - queue size {}", queues.size());
+                LOG.debug("QueuesPopulator - queue size {}", getQueues().size());
 
-                synchronized (queues) {
+                synchronized (getQueues()) {
 
                     // do as async multisearch
                     MultiSearchRequest msr = new MultiSearchRequest();
 
                     Iterator<Entry<QueueWithinCrawl, QueueInterface>> iterator =
-                            queues.entrySet().iterator();
+                            getQueues().entrySet().iterator();
 
                     lastQuery = Instant.now();
 
@@ -1060,7 +991,7 @@ public class OpensearchService extends AbstractFrontierService
 
                     queuesBeingPopulated.invalidate(qwc.toString());
 
-                    Queue queue = (Queue) queues.get(qwc);
+                    Queue queue = (Queue) getQueues().get(qwc);
                     queue.addToBuffer(urlInfoBuilder.build());
                 }
             }

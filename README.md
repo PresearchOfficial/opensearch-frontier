@@ -16,7 +16,7 @@ The [assignment implementation](https://github.com/PresearchOfficial/opensearch-
 
 ## Prerequisites
 
-* Java 8
+* Java 11
 * Maven
 * Docker (to run the tests)
 
