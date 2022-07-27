@@ -11,7 +11,7 @@
 				"frontierID": {
 					"type": "keyword"
 				},
-  			"address": {
+				"address": {
 					"type": "keyword"
 				},
 				"lastSeen": {

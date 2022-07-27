@@ -28,9 +28,18 @@ import org.testcontainers.utility.DockerImageName;
 
 public class TestOpensearchService {
 
+    private static String OPENSEARCH_VERSION = "latest";
+
+    static {
+        String version = System.getProperty("opensearch-version");
+        if (version != null) OPENSEARCH_VERSION = version;
+    }
+
     @Rule
     public GenericContainer opensearchContainer =
-            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.3.4"))
+            new GenericContainer(
+                            DockerImageName.parse(
+                                    "opensearchproject/opensearch:" + OPENSEARCH_VERSION))
                     .withExposedPorts(9200)
                     .withEnv("plugins.security.disabled", "true")
                     .withEnv("discovery.type", "single-node")

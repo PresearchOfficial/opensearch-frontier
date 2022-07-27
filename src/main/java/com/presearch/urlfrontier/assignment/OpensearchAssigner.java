@@ -37,6 +37,7 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
+import org.opensearch.action.DocWriteRequest;
 import org.opensearch.action.bulk.BulkProcessor;
 import org.opensearch.action.bulk.BulkRequest;
 import org.opensearch.action.bulk.BulkResponse;
@@ -241,6 +242,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                                 .source(mapFields1)
                                 .id(uuid);
                 try {
+                    if (client == null || closed) return;
                     client.index(qrequest1, RequestOptions.DEFAULT);
                 } catch (IOException e1) {
                     LOG.error("Exception caught when registering frontier", e1);
@@ -257,6 +259,8 @@ public class OpensearchAssigner implements IAssigner, Runnable {
     @Override
     public void close() throws IOException {
         LOG.info("close() method called for assigner {}", uuid);
+        // already closed or closing?
+        if (closed) return;
         closed = true;
         bulkProcessor.close();
         client.close();
@@ -284,15 +288,12 @@ public class OpensearchAssigner implements IAssigner, Runnable {
 
         HashSet<String> partitions = new HashSet<>();
 
-        List<String> nodesAddresses = new LinkedList<>();
-
         try {
             // get the results
             SearchResponse results = client.search(searchRequest, RequestOptions.DEFAULT);
             for (SearchHit hit : results.getHits()) {
                 Map<String, Object> sam = hit.getSourceAsMap();
                 partitions.add(sam.get("assignmentHash").toString());
-                nodesAddresses.add(sam.get("address").toString());
             }
         } catch (Exception e) {
             LOG.error("Exception caught when retrieving partitions for {}", uuid, e);
@@ -305,9 +306,6 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 uuid,
                 partitions.size(),
                 end.toEpochMilli() - start.toEpochMilli());
-
-        // tell the frontier who's in the cluster
-        listener.setNodes(nodesAddresses);
 
         return partitions;
     }
@@ -376,25 +374,33 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             searchRequest.source().seqNoAndPrimaryTerm(Boolean.TRUE);
             results = client.search(searchRequest, RequestOptions.DEFAULT);
 
+            List<String> nodesAddresses = new LinkedList<>();
+
             for (SearchHit hit : results.getHits()) {
                 Map<String, Object> fields = hit.getSourceAsMap();
                 long lastSeen = (long) fields.get("lastSeen");
                 // too old ?
                 if (lastSeen < timeToDie) {
-                    if (closed) return;
                     DeleteRequest drequest =
                             new DeleteRequest(OpensearchAssigner.frontiersIndexName, hit.getId());
                     drequest.setIfPrimaryTerm(hit.getPrimaryTerm());
                     drequest.setIfSeqNo(hit.getSeqNo());
-                    bulkProcessor.add(drequest);
+                    if (!request(drequest)) return;
                     continue;
                 }
                 String frontierID = fields.get("frontierID").toString();
                 if (!frontierIDs.contains(frontierID)) {
                     frontierIDs.add(frontierID);
                 }
+                if (fields.get("address") != null) {
+                    nodesAddresses.add(fields.get("address").toString());
+                }
                 continue;
             }
+
+            // tell the frontier who's in the cluster
+            listener.setNodes(nodesAddresses);
+
         } catch (Exception e) {
             LOG.error("Exception caught when scanning partitions - will try again later", e);
             // the count of frontiers will be incorrect
@@ -457,7 +463,7 @@ public class OpensearchAssigner implements IAssigner, Runnable {
                 DeleteRequest drequest =
                         new DeleteRequest(
                                 OpensearchAssigner.assignmentsIndexName, todelete.toString());
-                bulkProcessor.add(drequest);
+                if (!request(drequest)) return;
             }
         }
 
@@ -468,14 +474,12 @@ public class OpensearchAssigner implements IAssigner, Runnable {
         mapFields.put("lastSeen", timestamp);
 
         for (Integer partition : partitionsAssigned) {
-            if (closed) return;
-
             mapFields.put("assignmentHash", partition);
             IndexRequest qrequest =
                     new IndexRequest(OpensearchAssigner.assignmentsIndexName)
                             .source(mapFields)
                             .id(partition.toString());
-            bulkProcessor.add(qrequest);
+            if (!request(qrequest)) return;
         }
 
         // tell the frontier that its assignments might have changed
@@ -488,5 +492,12 @@ public class OpensearchAssigner implements IAssigner, Runnable {
             }
             listener.setAssignmentsChanged();
         }
+    }
+
+    private final boolean request(DocWriteRequest request) {
+        if (bulkProcessor == null) return false;
+        if (closed) return false;
+        bulkProcessor.add(request);
+        return true;
     }
 }

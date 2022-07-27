@@ -28,9 +28,21 @@ import org.testcontainers.utility.DockerImageName;
 /** Unit tests to check that the hash assignments is working fine */
 public class TestOpensearchAssigner {
 
+    private static String OPENSEARCH_VERSION = "latest";
+
+    static {
+        String version = System.getProperty("opensearch-version");
+        if (version != null) OPENSEARCH_VERSION = version;
+    }
+
     static class AssignmentHolder implements AssignmentsListener {
 
         boolean changed = false;
+        final String name;
+
+        public AssignmentHolder(String name) {
+            this.name = name;
+        }
 
         @Override
         public void setAssignmentsChanged() {
@@ -47,7 +59,7 @@ public class TestOpensearchAssigner {
 
         @Override
         public String getHostAndPort() {
-            return null;
+            return name + ":7071";
         }
 
         @Override
@@ -56,7 +68,9 @@ public class TestOpensearchAssigner {
 
     @Rule
     public GenericContainer opensearchContainer =
-            new GenericContainer(DockerImageName.parse("opensearchproject/opensearch:1.3.4"))
+            new GenericContainer(
+                            DockerImageName.parse(
+                                    "opensearchproject/opensearch:" + OPENSEARCH_VERSION))
                     .withExposedPorts(9200)
                     .withEnv("plugins.security.disabled", "true")
                     .withEnv("discovery.type", "single-node")
@@ -120,7 +134,8 @@ public class TestOpensearchAssigner {
         // kill the first one
         first.close();
 
-        // sleep for a few heartbeats so that the second assigner can detect that the first has
+        // sleep for a few heartbeats so that the second assigner can detect that the
+        // first has
         // left
         Thread.sleep(3 * heartbeatSec * 1000);
 
@@ -133,10 +148,9 @@ public class TestOpensearchAssigner {
     }
 
     private static IAssigner createAssigner(Map<String, String> configuration, String name) {
-        AssignmentHolder holder1 = new AssignmentHolder();
         configuration.put(IAssigner.UUID_CONFIG_NAME, name);
         IAssigner assign = new OpensearchAssigner();
-        assign.setListener(holder1);
+        assign.setListener(new AssignmentHolder(name));
         assign.init(configuration);
         return assign;
     }
